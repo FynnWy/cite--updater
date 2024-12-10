@@ -31,6 +31,18 @@ import re
 import random
 import argparse
 import os
+from requests.exceptions import HTTPError
+import logging
+from parser.dblp_parser import DblpParser
+
+logging.basicConfig(
+    level=logging.CRITICAL,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('citation_pipeline.log'),
+        # Removed StreamHandler to prevent console output
+    ]
+)
 
 def normalize_author_name(name: str) -> Dict[str, str]:
     """
@@ -109,46 +121,36 @@ def query_arxiv(title: str, match_threshold: int, delay: float) -> Optional[List
     finally:
         time.sleep(delay)
 
-@backoff.on_exception(
-    backoff.expo,
-    (requests.exceptions.RequestException, json.JSONDecodeError),
-    max_tries=5,
-    max_time=300
+# Initialize the DBLP parser with explicit index path
+dblp_parser = DblpParser(
+    xml_path="dblp/dblp-2024-11-04.xml", 
+    cache_dir="dblp_cache",
+    index_name="dblp_index"  # This will be used as the index name
 )
-def query_dblp(title: str, match_threshold: int, delay: float) -> Optional[List[Dict[str, str]]]:
-    """Query DBLP with exponential backoff retry."""
+
+def query_dblp_with_parser(title: str, match_threshold: int) -> Optional[List[Dict[str, str]]]:
+    """Query DBLP using the DblpParser."""
     try:
-        print(f"Querying DBLP for: {title[:100]}...")
-        options = {
-            'q': title,
-            'format': 'json',
-            'h': 1
-        }
-        response = requests.get(f'https://dblp.org/search/publ/api?{urlencode(options)}')
-        response.raise_for_status()
+        logging.debug(f"Querying DBLP for: {title[:100]}...")
+        result = dblp_parser.search_by_title(title)
         
-        data = response.json()
-        hits = data.get('result', {}).get('hits', {}).get('hit', [])
-        
-        if hits:
-            info = hits[0].get('info', {})
-            db_title = info.get('title', '')
-            
-            title_similarity = fuzz.ratio(db_title.lower(), title.lower())
-            print(f"DBLP match score: {title_similarity}")
+        if result:
+            # Compare titles using fuzzy matching
+            dblp_title = result.get('title', '')
+            title_similarity = fuzz.ratio(dblp_title.lower(), title.lower())
+            logging.info(f"DBLP match score: {title_similarity}")
             
             if title_similarity > match_threshold:
-                authors = info.get('authors', {}).get('author', [])
-                # Clean the author names before normalizing
-                return [normalize_author_name(re.sub(r'\s+\d{4,}$', '', author['text'])) 
-                       for author in authors 
-                       if isinstance(author, dict) and 'text' in author]
+                authors = result.get('authors', [])
+                # Normalize author names
+                return [normalize_author_name(author) for author in authors]
+            else:
+                logging.info(f"Title match score {title_similarity} below threshold {match_threshold}")
+                return None
         return None
     except Exception as e:
-        print(f"Error querying DBLP: {e}")
+        logging.error(f"Unexpected error querying DBLP: {e}")
         return None
-    finally:
-        time.sleep(delay)
 
 def check_name_match(parsed_name: Dict[str, str], matched_name: Dict[str, str]) -> Optional[str]:
     """
@@ -184,20 +186,12 @@ def process_publications(
 ) -> List[Dict]:
     """
     Main processing function that coordinates the entire pipeline.
-    
-    Args:
-        input_file: Path to input XML file
-        output_file: Path to output JSON file
-        match_threshold: Minimum score for title matching
-        dblp_delay: Delay between DBLP API calls
-        arxiv_delay: Delay between arXiv API calls
-        dry_run: If True, process only a random sample
-        sample_size: Number of papers to process in dry run
+    Currently only checking DBLP (arXiv temporarily disabled).
     """
-    print(f"\nProcessing publications from {input_file}")
+    logging.info(f"\nProcessing publications from {input_file}")
     publications = parse_xml(input_file)
     if not publications:
-        print("No publications found in XML file")
+        logging.warning("No publications found in XML file")
         return []
     
     if dry_run:
@@ -205,35 +199,18 @@ def process_publications(
         sample_size = min(sample_size, len(titles))
         sampled_titles = random.sample(titles, sample_size)
         publications = {title: publications[title] for title in sampled_titles}
-        print(f"\nDRY RUN: Processing {sample_size} random publications")
+        logging.info(f"\nDRY RUN: Processing {sample_size} random publications")
         
-    print(f"Found {len(publications)} publications to process")
+    logging.info(f"Found {len(publications)} publications to process")
     results = []
     matched_count = 0
     
     for i, (title, parsed_authors) in enumerate(publications.items(), 1):
-        print(f"\nProcessing publication {i}/{len(publications)}")
-        print(f"Title: {title}")
+        logging.info(f"\nProcessing publication {i}/{len(publications)}")
+        logging.debug(f"Title: {title}")
         
-        # Try Arxiv first
-        if arxiv_authors := query_arxiv(title, match_threshold, arxiv_delay):
-            # Check for name mismatches
-            mismatches = []
-            for idx, (parsed, matched) in enumerate(zip(parsed_authors, arxiv_authors)):
-                if mismatch := check_name_match(parsed, matched):
-                    mismatches.append(f"Author {idx + 1}: {mismatch}")
-                    
-            results.append({
-                'title': title,
-                'parsed_authors': parsed_authors,
-                'matched_authors': arxiv_authors,
-                'source': 'arxiv',
-                'mismatches': mismatches if mismatches else []
-            })
-            matched_count += 1
-        # Fall back to DBLP if no Arxiv match
-        elif dblp_authors := query_dblp(title, match_threshold, dblp_delay):
-            # Check for name mismatches
+        # Try DBLP only
+        if dblp_authors := query_dblp_with_parser(title, match_threshold):
             mismatches = []
             for idx, (parsed, matched) in enumerate(zip(parsed_authors, dblp_authors)):
                 if mismatch := check_name_match(parsed, matched):
@@ -247,16 +224,18 @@ def process_publications(
                 'mismatches': mismatches if mismatches else []
             })
             matched_count += 1
+            logging.info("Found match in DBLP")
         else:
-            print("No matches found in either source")
+            logging.info("No matches found in DBLP")
     
     try:
         with open(output_file, 'w', encoding='utf-8') as f:
             json.dump(results, f, indent=2, ensure_ascii=False)
-        print(f"\nResults have been written to {output_file}")
-        print(f"Found matches for {matched_count} out of {len(publications)} publications")
+        logging.info(f"\nResults have been written to {output_file}")
+        logging.info(f"Found matches for {matched_count} out of {len(publications)} publications")
+        logging.info(f"DBLP matches: {sum(1 for r in results if r['source'] == 'dblp')}")
     except Exception as e:
-        print(f"Error writing results to file: {e}")
+        logging.error(f"Error writing results to file: {e}")
     
     return results
 
