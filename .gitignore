@@ -3,6 +3,7 @@
 data/
 dblp/
 arxivs/
+pdfs/
 
 # Heavy data files
 *.pdf
