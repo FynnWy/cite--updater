@@ -33,7 +33,7 @@ Stage 2 - Name matching (no GROBID needed)
 - `validate` - `src.name_matching.validate_citations`
 - `classify` (optional) - `src.models.vllm_classifier`
 
-![Reference checking pipeline](docs/refcheck_updated.pdf)
+![Reference checking pipeline](docs/refcheck_updated.png)
 
 ## Repository map (roles)
 ```
@@ -53,7 +53,8 @@ src/models/                         # Optional LLM classification
   vllm_classifier.py
 src/parser/dblp_parser.py           # Shared DBLP utilities
 examples/                           # Demos & sample outputs
-docs/refcheck_updated.pdf           # Pipeline graphic
+docs/refcheck_updated.png           # Pipeline graphic (inline preview)
+docs/refcheck_updated.pdf           # High-res PDF version of the pipeline graphic
 validation_results/                 # Outputs written by validate/classify
 requirements.txt
 ```
