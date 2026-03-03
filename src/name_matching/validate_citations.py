@@ -6,7 +6,7 @@ For each reference in the JSON files, it queries DBLP by title and compares
 the authors to detect incorrect citations.
 
 Usage:
-    python src/validate_citations.py [options]
+    python -m src.name_matching.validate_citations [options]
     
 Options:
     --input-dir DIR       Directory containing parsed JSON files (default: data/parsed_jsons)
@@ -24,6 +24,7 @@ from typing import List, Dict, Optional, Any
 from pathlib import Path
 from collections import Counter, defaultdict
 import random
+import re
 from tqdm import tqdm
 
 # Setup logging BEFORE importing other modules
@@ -42,21 +43,16 @@ logging.getLogger('dblp_parser').setLevel(logging.ERROR)
 # Also try to suppress all logging from retriv submodules
 logging.getLogger('retriv.SparseRetriever').setLevel(logging.ERROR)
 
-# Import existing matching functions
-import sys
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-from analyze_matches import (
+from .analyze_matches import (
     is_name_match,
     check_author_lists,
     initial_matches,
     is_compound_initial
 )
-from parser.dblp_parser import DblpParser
+from ..parser.dblp_parser import DblpParser
 from nameparser import HumanName
 from rapidfuzz import fuzz
 from unidecode import unidecode
-import re
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)

@@ -20,7 +20,7 @@ from huggingface_hub import login
 from vllm import LLM, SamplingParams
 
 # Local imports
-from prompt import create_classification_prompt
+from .prompt import create_classification_prompt
 
 def setup_logging(output_dir: str) -> None:
     """Configure logging to write to both file and console."""

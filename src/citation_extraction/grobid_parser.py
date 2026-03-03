@@ -6,6 +6,7 @@ in the data/outputs/arxiv_pdfs directory, extracts ID, Title, Authors, and
 Affiliations, and writes them to a CSV file.
 """
 
+import argparse
 import os
 import csv
 import xml.etree.ElementTree as ET
@@ -189,49 +190,31 @@ def parse_xml_file(file_path: Path) -> Optional[Dict[str, str]]:
         return None
 
 
-def main():
-    """
-    Main function to process all matching XML files and create CSV output.
-    """
-    # Define input and output paths
-    input_dir = Path('data/outputs/arxiv_pdfs')
-    output_csv = Path('data/arxiv_metadata.csv')
-    
-    # Check if input directory exists
+def process_all(input_dir: Path, pattern: str, output_csv: Path) -> None:
+    """Process all matching XML files and write a TSV."""
     if not input_dir.exists():
         print(f"Error: Input directory {input_dir} does not exist!")
         return
     
-    # Find all files matching the pattern '2025.*.grobid.tei.xml'
-    xml_files = list(input_dir.glob('2025.*.grobid.tei.xml'))
-    
+    xml_files = list(input_dir.glob(pattern))
     if not xml_files:
-        print(f"No files found matching pattern '2025.*.grobid.tei.xml' in {input_dir}")
+        print(f"No files found matching pattern '{pattern}' in {input_dir}")
         return
     
     print(f"Found {len(xml_files)} XML files to process...")
     
-    # Process all XML files
-    results = []
+    results: List[Dict[str, str]] = []
     for xml_file in sorted(xml_files):
         result = parse_xml_file(xml_file)
         if result:
             results.append(result)
     
-    # Write results to CSV
     if results:
-        # Ensure output directory exists
         output_csv.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Write CSV file
         with open(output_csv, 'w', newline='', encoding='utf-8') as csvfile:
             fieldnames = ['ID', 'Title', 'Authors', 'Affiliations']
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames, delimiter='\t')
-            
-            # Write header
             writer.writeheader()
-            
-            # Write data rows
             for result in results:
                 writer.writerow(result)
         
@@ -239,6 +222,15 @@ def main():
         print(f"CSV file written to: {output_csv}")
     else:
         print("No valid data extracted from XML files.")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Parse GROBID TEI XML into TSV/CSV")
+    parser.add_argument('--input-dir', type=Path, default=Path('data/outputs/arxiv_pdfs'))
+    parser.add_argument('--pattern', type=str, default='*.grobid.tei.xml')
+    parser.add_argument('--output-csv', type=Path, default=Path('data/arxiv_metadata.csv'))
+    args = parser.parse_args()
+    process_all(args.input_dir, args.pattern, args.output_csv)
 
 
 if __name__ == '__main__':

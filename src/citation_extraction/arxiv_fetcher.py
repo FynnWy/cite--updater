@@ -11,7 +11,7 @@ Features:
 - Configurable matching thresholds
 
 Usage:
-    python download_arxiv_pdfs.py [options]
+    python -m src.citation_extraction.arxiv_fetcher [options]
 
 Options:
     --output-dir DIR          Directory to save PDFs (default: data/arxiv_pdfs)
