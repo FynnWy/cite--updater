@@ -37,7 +37,7 @@ def run_subprocess(module: str, extra_args: list[str]) -> None:
 
 
 def cmd_download(args: argparse.Namespace) -> None:
-    from src.citation_extraction import arxiv_fetcher
+    from src.models import arxiv_fetcher
 
     arxiv_fetcher.setup_logging(args.log_file)
     resume = not args.no_resume

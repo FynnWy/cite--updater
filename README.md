@@ -6,11 +6,45 @@ Two-stage pipeline aligned with the paper methodology:
 
 All commands are exposed via one CLI: `python -m src.pipeline ...`.
 
+## Data Initialisation
+DBLP Dump
+```bash
+mkdir -p data
+curl -L -o data/dblp.xml.gz https://dblp.org/xml/dblp.xml.gz
+gunzip -f data/dblp.xml.gz
+```
+
+DBLP Conferences
+```bash
+python -m src.citation_extraction.dblp_scraper --output-dir data/dblp_conferences
+# Optionally with years: python -m src.citation_extraction.dblp_scraper --start-year 2018 --end-year 2025 --output-dir data/dblp_conferences
+python -m src.citation_extraction.dblp_scraper \
+  --start-year 2015 \
+  --end-year 2025 \
+  --output-dir data/dblp_conferences \
+  --delay 2.0
+```
+
+
+
+
+
+
+
 ## Quick Start (per stage)
+
 ```bash
 python -m venv .venv
 . .venv/Scripts/activate   # Windows
+
+python3.11 -m venv .venv
+source .venv/bin/activate # Apple
+
 pip install -r requirements.txt
+
+
+
+
 
 # Stage 1 (GROBID only needed for the grobid step)
 python -m src.pipeline download --output-dir data/arxiv_pdfs

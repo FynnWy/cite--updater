@@ -1,15 +1,21 @@
 import xml.etree.ElementTree as ET
-from typing import Dict, List, Optional, Iterator
+from typing import Dict, List, Optional
 import os
 import logging
 import pickle
-from difflib import SequenceMatcher
-from pathlib import Path
 from tqdm import tqdm
 from rapidfuzz import fuzz, process
-from retriv import SparseRetriever
-from retriv.paths import sr_state_path
-import numpy as np
+
+try:
+    from retriv import SparseRetriever
+    from retriv.paths import sr_state_path
+    import numpy as np
+    RETRIV_AVAILABLE = True
+except ImportError:
+    SparseRetriever = None
+    sr_state_path = None
+    np = None
+    RETRIV_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +28,9 @@ class DblpParser:
             raise FileNotFoundError(f"DBLP XML file not found at: {xml_path}")
         self.xml_path = xml_path
         self.cache_dir = os.path.join(os.path.expanduser("~"), ".retriv", "collections", cache_dir)
-        self.publications_by_title = {}  # In-memory index
+        self.publications_by_title = {}
+        self.fallback_publications: List[Dict] = []
+        self.fallback_titles: List[str] = []
         
         # Create cache directory if it doesn't exist
         os.makedirs(self.cache_dir, exist_ok=True)
@@ -36,6 +44,11 @@ class DblpParser:
     
     def _load_or_build_index(self):
         """Load index from cache if it exists and is newer than XML file, otherwise build it"""
+        if not RETRIV_AVAILABLE:
+            logger.warning("retriv is not installed; using fallback title index")
+            self._load_or_build_fallback_index()
+            return
+
         xml_mtime = os.path.getmtime(self.xml_path)
         
         if os.path.exists(self.index_path):
@@ -54,6 +67,36 @@ class DblpParser:
             logger.info("No existing index found, building new one...")
         
         self._build_index()
+
+    def _load_or_build_fallback_index(self):
+        """Load a lightweight local index when retriv is unavailable."""
+        xml_mtime = os.path.getmtime(self.xml_path)
+        fallback_cache = f"{self.index_path}.fallback.pkl"
+
+        if os.path.exists(fallback_cache) and os.path.getmtime(fallback_cache) > xml_mtime:
+            try:
+                with open(fallback_cache, "rb") as f:
+                    cache = pickle.load(f)
+                self.fallback_publications = cache.get("publications", [])
+                self.fallback_titles = cache.get("titles", [])
+                if self.fallback_publications and self.fallback_titles:
+                    logger.info("Loaded fallback DBLP index from cache")
+                    return
+            except Exception as e:
+                logger.warning(f"Failed to load fallback cache: {e}")
+
+        self._build_fallback_index()
+        try:
+            with open(fallback_cache, "wb") as f:
+                pickle.dump(
+                    {
+                        "publications": self.fallback_publications,
+                        "titles": self.fallback_titles,
+                    },
+                    f,
+                )
+        except Exception as e:
+            logger.warning(f"Failed to save fallback cache: {e}")
     
     def _create_xml_parser(self) -> ET.XMLParser:
         """Create XML parser with all necessary entity definitions"""
@@ -123,6 +166,10 @@ class DblpParser:
     
     def _build_index(self):
         """Build search index using Retriv"""
+        if not RETRIV_AVAILABLE:
+            self._build_fallback_index()
+            return
+
         # Initialize the sparse retriever with custom settings
         self.search_engine = SparseRetriever(
             index_name=self.index_path,
@@ -190,6 +237,27 @@ class DblpParser:
         logger.info("Saving index...")
         np.savez_compressed(index_path, state=state)
         logger.info(f"Index saved to {index_path}")
+
+    def _build_fallback_index(self):
+        """Build a simple in-memory title index without retriv."""
+        publication_types = {'article', 'inproceedings', 'proceedings', 'book',
+                           'incollection', 'phdthesis', 'mastersthesis'}
+
+        parser = self._create_xml_parser()
+        context = ET.iterparse(self.xml_path, events=('end',), parser=parser)
+
+        self.fallback_publications = []
+        self.fallback_titles = []
+
+        for _, elem in context:
+            if elem.tag in publication_types:
+                pub = self._parse_publication(elem)
+                if pub['title']:
+                    self.fallback_publications.append(pub)
+                    self.fallback_titles.append(pub['title'])
+                elem.clear()
+
+        logger.info(f"Built fallback index with {len(self.fallback_titles)} publications")
     
     def search_by_title(self, search_title: str, threshold: float = 5.0, top_k: int = 1) -> Optional[Dict]:
         """
@@ -203,18 +271,34 @@ class DblpParser:
         Returns:
             Optional[Dict]: Best matching publication or None if no matches above threshold
         """
-        if not self.search_engine:
-            raise RuntimeError("Search engine not initialized")
-            
-        results = self.search_engine.search(
-            query=search_title,
-            return_docs=True,
-            cutoff=top_k
+        if self.search_engine:
+            results = self.search_engine.search(
+                query=search_title,
+                return_docs=True,
+                cutoff=top_k
+            )
+
+            if results and results[0]["score"] >= threshold:
+                logger.info(f"Found match with BM25 score: {results[0]['score']}")
+                return results[0]["metadata"]
+            return None
+
+        if not self.fallback_titles:
+            raise RuntimeError("Fallback search index not initialized")
+
+        # Default threshold 5.0 is BM25-oriented; keep fallback permissive and
+        # let title_similarity_threshold in validate_citations decide final match.
+        score_cutoff = threshold if threshold > 20 else 0
+        match = process.extractOne(
+            search_title,
+            self.fallback_titles,
+            scorer=fuzz.token_set_ratio,
+            processor=str.lower,
+            score_cutoff=score_cutoff,
         )
-        
-        # Return best match above threshold
-        if results and results[0]["score"] >= threshold:
-            logger.info(f"Found match with BM25 score: {results[0]['score']}")
-            return results[0]["metadata"]
-            
-        return None
+        if not match:
+            return None
+
+        _, score, idx = match
+        logger.info(f"Found fallback match with fuzzy score: {score}")
+        return self.fallback_publications[idx]

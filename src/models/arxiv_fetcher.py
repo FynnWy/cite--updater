@@ -491,12 +491,13 @@ def process_all_conferences(output_dir: str,
 
     # Filter conferences to process
     conferences_to_process = []
-    resume_found = False
+    # If there is no checkpoint conference, start from the beginning.
+    resume_found = (not resume) or (last_conference is None)
 
     for conference, year in all_conferences:
         conf_year_key = f"{conference}_{year}"
 
-        if resume and not resume_found:
+        if resume and last_conference and not resume_found:
             if conf_year_key == last_conference:
                 resume_found = True
             else:
