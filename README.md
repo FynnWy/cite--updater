@@ -32,7 +32,7 @@ python -m src.citation_extraction.dblp_scraper \
 
 
 ## Quick Start (per stage)
-
+Für grobid -> .venv
 ```bash
 python -m venv .venv
 . .venv/Scripts/activate   # Windows
@@ -42,7 +42,48 @@ source .venv/bin/activate # Apple
 
 pip install -r requirements.txt
 
+#------------
+brew install --cask docker
 
+# -> Nach Installation: Docker App öffnen (nur öffnen reicht aus)
+
+# venv aktivieren
+source .venv/bin/activate
+# GROBID-Server starten (separates Terminal):
+docker run --rm --init -p 8070:8070 grobid/grobid:0.8.0
+
+# in neuem Terminal diesen Command Ausführen:
+unset GROBID_URL
+export GROBID_URL=http://localhost:8070/api
+curl -sS http://localhost:8070/api/isalive
+python -m src.pipeline grobid --input-dir data/arxiv_pdfs --output-dir data/outputs/arxiv_pdfs
+
+#-----------------
+python -m src.pipeline parse \
+  --input-dir data/outputs/arxiv_pdfs \
+  --pattern "**/*.grobid.tei.xml" \
+  --output-csv data/arxiv_metadata.csv
+
+#---------------
+python -m src.pipeline to-json --input-dir data/outputs/arxiv_pdfs --output-dir data/parsed_jsons
+
+
+
+
+
+
+#------------------
+# Für Validate -> .venv310 
+# Für bessere/schnellere Analyse: Retriv installieren: (Wieder env auf Python 3.10 notwendig)
+source .venv310/bin/activate
+
+pip install retriv
+# Dann prüfen
+python -c "from retriv import SparseRetriever; print('retriv ok')"
+
+python -m src.pipeline validate --input-dir data/parsed_jsons --dblp-xml data/dblp.xml --output-dir validation_results
+
+#------------
 
 
 

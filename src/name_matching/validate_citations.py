@@ -20,6 +20,7 @@ import json
 import os
 import logging
 import argparse
+import sys
 from typing import List, Dict, Optional, Any
 from pathlib import Path
 from collections import Counter, defaultdict
@@ -27,12 +28,14 @@ import random
 import re
 from tqdm import tqdm
 
+Path("data").mkdir(parents=True, exist_ok=True)
+
 # Setup logging BEFORE importing other modules
 logging.basicConfig(
     level=logging.WARNING,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('citation_validation.log'),
+        logging.FileHandler('data/citation_validation.log'),
         logging.StreamHandler()
     ]
 )
@@ -943,7 +946,15 @@ def process_json_file(json_path: str, dblp_parser: DblpParser,
         logger.info(f"Found {len(references)} references in {json_path}")
         
         # Validate each reference
-        for ref in references:
+        total_refs = len(references)
+        for ref_idx, ref in enumerate(references, start=1):
+            if ref_idx == 1 or ref_idx % 10 == 0 or ref_idx == total_refs:
+                logger.info(
+                    "  reference %s/%s in %s",
+                    ref_idx,
+                    total_refs,
+                    Path(json_path).name,
+                )
             validation_result = validate_reference(
                 ref, dblp_parser, threshold, title_similarity_threshold
             )
@@ -1009,11 +1020,7 @@ def main():
     if not os.path.exists(args.dblp_xml):
         parser.error(f"DBLP XML file not found: {args.dblp_xml}")
     
-    # Temporarily disable logging for cleaner tqdm output (keep only CRITICAL)
-    original_root_level = logging.getLogger().level
-    original_logger_level = logger.level
-    logging.getLogger().setLevel(logging.CRITICAL)
-    logger.setLevel(logging.CRITICAL)
+    logger.info("Initializing DBLP parser from: %s", args.dblp_xml)
 
     # Initialize DBLP parser
     try:
@@ -1023,8 +1030,6 @@ def main():
             index_name="dblp_index"
         )
     except Exception as e:
-        logging.getLogger().setLevel(original_root_level)  # Restore logging
-        logger.setLevel(original_logger_level)
         logger.error(f"Failed to initialize DBLP parser: {e}")
         return
     
@@ -1034,6 +1039,7 @@ def main():
     if not json_files:
         logger.warning("No JSON files found to process")
         return
+    logger.info("Starting validation for %s files", len(json_files))
     
     # Process each JSON file
     all_results = []
@@ -1047,7 +1053,13 @@ def main():
         'total_skipped': 0
     }
     
-    for json_file in tqdm(json_files, desc="Processing files"):
+    progress = tqdm(
+        json_files,
+        desc="Processing files",
+        disable=not sys.stderr.isatty(),
+    )
+    for idx, json_file in enumerate(progress, start=1):
+        logger.info("[%s/%s] validating %s", idx, len(json_files), json_file)
         file_result = process_json_file(
             json_file, dblp_parser, args.threshold, args.title_similarity_threshold
         )
@@ -1061,6 +1073,11 @@ def main():
         total_stats['total_no_match'] += file_result['no_match_count']
         total_stats['total_errors'] += file_result['error_count']
         total_stats['total_skipped'] += file_result['skipped_count']
+        progress.set_postfix(
+            matched=total_stats['total_matched'],
+            mismatches=total_stats['total_mismatches'],
+            no_match=total_stats['total_no_match'],
+        )
     
     # Extract all validation results for analysis
     all_validation_results = []
@@ -1138,10 +1155,6 @@ def main():
         logger.error(f"Error writing results to file: {e}")
         return
     
-    # Restore logging levels and print summary
-    logging.getLogger().setLevel(original_root_level)
-    logger.setLevel(original_logger_level)
-
     # Print summary
     logger.info("\n" + "="*60)
     logger.info("VALIDATION SUMMARY")
@@ -1155,8 +1168,7 @@ def main():
     logger.info(f"Errors: {total_stats['total_errors']}")
     logger.info("="*60)
     
-    # Always reorganize results into categorized files
-    reorganize_results(output_data, args.output_dir)
+    # Legacy behavior: write only one output JSON file.
 
 
 def extract_all_results(data: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -1296,4 +1308,3 @@ This folder contains citation validation results organized by category.
 
 if __name__ == '__main__':
     main()
-

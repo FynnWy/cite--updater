@@ -19,7 +19,7 @@ Options:
     --match-threshold N       Title similarity threshold for arXiv matches (default: 85)
     --delay N                 Delay between arXiv API calls in seconds (default: 3)
     --resume                  Resume from last checkpoint (default: True)
-    --log-file FILE          Progress log file (default: arxiv_download_progress.log)
+    --log-file FILE          Progress log file (default: data/arxiv_download_progress.log)
 """
 
 import json
@@ -94,8 +94,9 @@ def save_metadata(metadata_file: str, metadata: Dict[str, Any]) -> None:
     except Exception as e:
         logging.error(f"Could not save metadata to {metadata_file}: {e}")
 
-def setup_logging(log_file: str = "arxiv_download_progress.log"):
+def setup_logging(log_file: str = "data/arxiv_download_progress.log"):
     """Configure logging with file and console output."""
+    Path(log_file).parent.mkdir(parents=True, exist_ok=True)
     # Create logger
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
@@ -594,7 +595,7 @@ def main():
                        help='Resume from last checkpoint')
     parser.add_argument('--no-resume', action='store_true',
                        help='Do not resume from checkpoint (start fresh)')
-    parser.add_argument('--log-file', type=str, default='arxiv_download_progress.log',
+    parser.add_argument('--log-file', type=str, default='data/arxiv_download_progress.log',
                        help='Progress log file')
     parser.add_argument('--metadata-file', type=str, default='data/arxiv_papers_metadata.json',
                        help='Metadata file for downloaded papers')
@@ -638,7 +639,7 @@ def main():
         print(f"Success rate: {success_rate:.1f}%")
 
     print(f"Log file: {args.log_file}")
-    print(f"Summary file: arxiv_download_summary.json")
+    print(f"Summary file: {Path(args.log_file).parent / 'arxiv_download_summary.json'}")
     print(f"Metadata file: {args.metadata_file}")
 
 if __name__ == '__main__':

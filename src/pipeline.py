@@ -13,6 +13,7 @@ Stage 2: Name matching against databases
 from __future__ import annotations
 
 import argparse
+import logging
 import subprocess
 import sys
 from pathlib import Path
@@ -56,13 +57,18 @@ def cmd_download(args: argparse.Namespace) -> None:
 def cmd_grobid(args: argparse.Namespace) -> None:
     from src.citation_extraction.grobid_runner import run_grobid
 
-    run_grobid(
-        input_dir=str(args.input_dir),
-        output_dir=str(args.output_dir),
-        config_path=str(args.config_path),
-        verbose=not args.no_verbose,
-        force=not args.no_force,
-    )
+    try:
+        run_grobid(
+            input_dir=str(args.input_dir),
+            output_dir=str(args.output_dir),
+            config_path=str(args.config_path),
+            parsed_json_dir=str(args.parsed_json_dir),
+            export_json=not args.no_export_json,
+            verbose=not args.no_verbose,
+            force=not args.no_force,
+        )
+    except RuntimeError as exc:
+        raise SystemExit(f"ERROR: {exc}") from None
 
 
 def cmd_parse(args: argparse.Namespace) -> None:
@@ -72,6 +78,16 @@ def cmd_parse(args: argparse.Namespace) -> None:
         input_dir=Path(args.input_dir),
         pattern=args.pattern,
         output_csv=Path(args.output_csv),
+    )
+
+
+def cmd_to_json(args: argparse.Namespace) -> None:
+    from src.citation_extraction.tei_to_json import export_tei_tree_to_json
+
+    export_tei_tree_to_json(
+        tei_root=Path(args.input_dir),
+        json_root=Path(args.output_dir),
+        pattern=args.pattern,
     )
 
 
@@ -120,7 +136,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_dl.add_argument("--match-threshold", type=int, default=85)
     p_dl.add_argument("--delay", type=float, default=3.0)
     p_dl.add_argument("--no-resume", action="store_true", help="start fresh, ignore checkpoints")
-    p_dl.add_argument("--log-file", type=str, default="arxiv_download_progress.log")
+    p_dl.add_argument(
+        "--log-file",
+        type=str,
+        default=str(BASE_DIR / "data" / "arxiv_download_progress.log"),
+    )
     p_dl.add_argument("--metadata-file", type=Path, default=BASE_DIR / "data" / "arxiv_papers_metadata.json")
     p_dl.set_defaults(func=cmd_download)
 
@@ -129,6 +149,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_gr.add_argument("--input-dir", type=Path, default=PDF_DIR)
     p_gr.add_argument("--output-dir", type=Path, default=GROBID_XML_DIR)
     p_gr.add_argument("--config-path", type=Path, default=BASE_DIR / "config" / "config.json")
+    p_gr.add_argument("--parsed-json-dir", type=Path, default=PARSED_JSON_DIR)
+    p_gr.add_argument(
+        "--no-export-json",
+        action="store_true",
+        help="skip TEI->JSON export for validate input",
+    )
     p_gr.add_argument("--no-verbose", action="store_true")
     p_gr.add_argument("--no-force", action="store_true")
     p_gr.set_defaults(func=cmd_grobid)
@@ -139,6 +165,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_ps.add_argument("--pattern", type=str, default="*.grobid.tei.xml")
     p_ps.add_argument("--output-csv", type=Path, default=METADATA_CSV)
     p_ps.set_defaults(func=cmd_parse)
+
+    # to-json
+    p_tj = sub.add_parser("to-json", help="Convert GROBID TEI XML to parsed JSON files")
+    p_tj.add_argument("--input-dir", type=Path, default=GROBID_XML_DIR)
+    p_tj.add_argument("--output-dir", type=Path, default=PARSED_JSON_DIR)
+    p_tj.add_argument("--pattern", type=str, default="**/*.grobid.tei.xml")
+    p_tj.set_defaults(func=cmd_to_json)
 
     # validate
     p_va = sub.add_parser("validate", help="Validate citations against DBLP")
@@ -162,6 +195,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    )
     parser = build_parser()
     args = parser.parse_args(argv)
     args.func(args)
