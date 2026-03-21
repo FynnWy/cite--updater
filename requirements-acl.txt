@@ -1,0 +1,9 @@
+# Optional dependencies for ACL Anthology download support.
+# Usage:
+#   pip install -r requirements.txt -r requirements-acl.txt
+#
+# Note:
+#   On Python 3.11, acl-anthology can conflict with grobid-client
+#   due upstream attrs/lxml version constraints.
+
+acl-anthology>=0.5.0

@@ -1,7 +1,7 @@
 """Unified entry point for the two-stage reference-checking pipeline.
 
 Stage 1: Citation extraction
-  download  -> fetch PDFs from arXiv based on DBLP metadata
+  download  -> fetch PDFs from arXiv, ACL Anthology, or both
   grobid    -> run GROBID fulltext extraction on PDFs
   parse     -> turn GROBID XML into tabular metadata
 
@@ -16,12 +16,14 @@ import argparse
 import logging
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Common default paths
 PDF_DIR = BASE_DIR / "data" / "arxiv_pdfs"
+ACL_PDF_DIR = BASE_DIR / "data" / "acl_pdfs"
 GROBID_XML_DIR = BASE_DIR / "data" / "outputs" / "arxiv_pdfs"
 METADATA_CSV = BASE_DIR / "data" / "arxiv_metadata.csv"
 PARSED_JSON_DIR = BASE_DIR / "data" / "parsed_jsons"
@@ -38,20 +40,47 @@ def run_subprocess(module: str, extra_args: list[str]) -> None:
 
 
 def cmd_download(args: argparse.Namespace) -> None:
-    from src.models import arxiv_fetcher
-
-    arxiv_fetcher.setup_logging(args.log_file)
-    resume = not args.no_resume
+    source = args.source
     max_papers = args.max_papers if args.max_papers and args.max_papers > 0 else None
-    arxiv_fetcher.process_all_conferences(
-        output_dir=str(args.output_dir),
-        max_papers=max_papers,
-        match_threshold=args.match_threshold,
-        delay=args.delay,
-        resume=resume,
-        log_file=args.log_file,
-        metadata_file=str(args.metadata_file),
-    )
+
+    if source in {"arxiv", "both"}:
+        from src.models import arxiv_fetcher
+
+        arxiv_fetcher.setup_logging(args.log_file)
+        resume = not args.no_resume
+        arxiv_fetcher.process_all_conferences(
+            output_dir=str(args.output_dir),
+            max_papers=max_papers,
+            match_threshold=args.match_threshold,
+            delay=args.delay,
+            resume=resume,
+            log_file=args.log_file,
+            metadata_file=str(args.metadata_file),
+        )
+
+    if source in {"acl", "both"}:
+        from src.models import acl_fetcher
+
+        acl_fetcher.setup_logging()
+        acl_max_papers = (
+            args.acl_max_papers
+            if args.acl_max_papers and args.acl_max_papers > 0
+            else max_papers
+        )
+        try:
+            acl_fetcher.download_papers_by_year_range(
+                start_year=args.acl_start_year,
+                end_year=args.acl_end_year,
+                output_dir=str(args.acl_output_dir),
+                delay=args.acl_delay,
+                max_papers=acl_max_papers,
+                max_workers=args.acl_max_workers,
+                skip_if_on_arxiv=not args.include_arxiv,
+                arxiv_match_threshold=args.arxiv_check_threshold,
+                arxiv_delay=args.arxiv_check_delay,
+            )
+        except RuntimeError as exc:
+            raise SystemExit(f"ERROR: {exc}") from None
 
 
 def cmd_grobid(args: argparse.Namespace) -> None:
@@ -115,11 +144,21 @@ def cmd_classify(args: argparse.Namespace) -> None:
         str(args.input_file),
         "--output_file",
         str(args.output_file),
+        "--backend",
+        str(args.backend),
+        "--transformers_device",
+        str(args.transformers_device),
+        "--batch_size",
+        str(args.batch_size),
+        "--model_name",
+        str(args.model_name),
     ]
     if args.max_samples:
         cli_args += ["--max_samples", str(args.max_samples)]
     if args.gpu_memory_utilization is not None:
         cli_args += ["--gpu_memory_utilization", str(args.gpu_memory_utilization)]
+    if args.hf_token:
+        cli_args += ["--hf_token", str(args.hf_token)]
     run_subprocess("src.models.vllm_classifier", cli_args)
 
 
@@ -129,8 +168,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    # download
-    p_dl = sub.add_parser("download", help="Download PDFs from arXiv")
+    # download (unified source command)
+    p_dl = sub.add_parser(
+        "download",
+        help="Download PDFs from arXiv, ACL Anthology, or both",
+    )
+    p_dl.add_argument("--source", choices=["arxiv", "acl", "both"], default="arxiv")
     p_dl.add_argument("--output-dir", type=Path, default=PDF_DIR)
     p_dl.add_argument("--max-papers", type=int, default=None)
     p_dl.add_argument("--match-threshold", type=int, default=85)
@@ -141,7 +184,64 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default=str(BASE_DIR / "data" / "arxiv_download_progress.log"),
     )
-    p_dl.add_argument("--metadata-file", type=Path, default=BASE_DIR / "data" / "arxiv_papers_metadata.json")
+    p_dl.add_argument(
+        "--metadata-file",
+        type=Path,
+        default=BASE_DIR / "data" / "arxiv_papers_metadata.json",
+    )
+    p_dl.add_argument(
+        "--acl-output-dir",
+        type=Path,
+        default=ACL_PDF_DIR,
+        help="Output directory for ACL downloads",
+    )
+    p_dl.add_argument(
+        "--acl-start-year",
+        type=int,
+        default=datetime.now().year - 10,
+        help="Start year for ACL Anthology downloads",
+    )
+    p_dl.add_argument(
+        "--acl-end-year",
+        type=int,
+        default=None,
+        help="End year for ACL Anthology downloads (default: current year)",
+    )
+    p_dl.add_argument(
+        "--acl-delay",
+        type=float,
+        default=1.0,
+        help="Delay between ACL download requests",
+    )
+    p_dl.add_argument(
+        "--acl-max-workers",
+        type=int,
+        default=5,
+        help="Parallel workers for ACL PDF downloads",
+    )
+    p_dl.add_argument(
+        "--acl-max-papers",
+        type=int,
+        default=None,
+        help="Maximum ACL papers to download (falls back to --max-papers)",
+    )
+    p_dl.add_argument(
+        "--include-arxiv",
+        action="store_true",
+        help="for ACL source: also download papers available on arXiv",
+    )
+    p_dl.add_argument(
+        "--arxiv-check-threshold",
+        type=int,
+        default=90,
+        help="Title threshold for ACL->arXiv availability checks",
+    )
+    p_dl.add_argument(
+        "--arxiv-check-delay",
+        type=float,
+        default=3.0,
+        help="Delay between arXiv checks during ACL filtering",
+    )
     p_dl.set_defaults(func=cmd_download)
 
     # grobid
@@ -184,9 +284,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_va.set_defaults(func=cmd_validate)
 
     # classify
-    p_cl = sub.add_parser("classify", help="Classify mismatches with vLLM")
+    p_cl = sub.add_parser("classify", help="Classify mismatches with LLM backend")
     p_cl.add_argument("--input_file", type=Path, default=VALIDATION_JSON)
     p_cl.add_argument("--output_file", type=Path, default=CLASSIFIED_JSON)
+    p_cl.add_argument("--backend", choices=["auto", "vllm", "transformers"], default="auto")
+    p_cl.add_argument(
+        "--transformers_device",
+        choices=["auto", "cpu", "mps", "cuda"],
+        default="auto",
+    )
+    p_cl.add_argument("--batch_size", type=int, default=16)
+    p_cl.add_argument("--model_name", type=str, default="Qwen/Qwen3-4B-Instruct-2507")
+    p_cl.add_argument("--hf_token", type=str, default=None)
     p_cl.add_argument("--max_samples", type=int, default=None)
     p_cl.add_argument("--gpu_memory_utilization", type=float, default=None)
     p_cl.set_defaults(func=cmd_classify)
