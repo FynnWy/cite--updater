@@ -28,7 +28,7 @@ GROBID_XML_DIR = BASE_DIR / "data" / "outputs" / "arxiv_pdfs"
 METADATA_CSV = BASE_DIR / "data" / "arxiv_metadata.csv"
 PARSED_JSON_DIR = BASE_DIR / "data" / "parsed_jsons"
 DBLP_XML = BASE_DIR / "data" / "dblp.xml"
-VALIDATION_DIR = BASE_DIR / "validation_results"
+VALIDATION_DIR = BASE_DIR / "data" / "results"
 VALIDATION_JSON = VALIDATION_DIR / "validation_results.json"
 CLASSIFIED_JSON = VALIDATION_DIR / "classified_results.json"
 

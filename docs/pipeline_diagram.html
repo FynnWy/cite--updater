@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Citation Updater — Pipeline Diagram</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: "Segoe UI", Arial, sans-serif;
+      background: #0f1117;
+      color: #e2e8f0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 40px 20px;
+    }
+
+    h1 {
+      font-size: 1.5rem;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      color: #94a3b8;
+      margin-bottom: 48px;
+      text-transform: uppercase;
+    }
+
+    .pipeline {
+      display: flex;
+      align-items: center;
+      gap: 0;
+      flex-wrap: nowrap;
+    }
+
+    /* ── Step card ── */
+    .step {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      width: 160px;
+    }
+
+    .step-number {
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      color: #64748b;
+      margin-bottom: 8px;
+      text-transform: uppercase;
+    }
+
+    .step-box {
+      width: 100%;
+      border-radius: 12px;
+      padding: 18px 14px;
+      text-align: center;
+      border: 1.5px solid transparent;
+      position: relative;
+    }
+
+    .step-icon {
+      font-size: 1.8rem;
+      margin-bottom: 10px;
+      display: block;
+    }
+
+    .step-title {
+      font-size: 0.85rem;
+      font-weight: 700;
+      margin-bottom: 6px;
+      letter-spacing: 0.02em;
+    }
+
+    .step-cmd {
+      font-family: "Courier New", monospace;
+      font-size: 0.65rem;
+      padding: 4px 8px;
+      border-radius: 6px;
+      margin-bottom: 10px;
+      display: inline-block;
+    }
+
+    .step-desc {
+      font-size: 0.7rem;
+      line-height: 1.5;
+      color: #94a3b8;
+    }
+
+    /* ── Output badge ── */
+    .output {
+      margin-top: 12px;
+      font-size: 0.62rem;
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+    }
+
+    /* ── Arrow ── */
+    .arrow {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      width: 52px;
+      flex-shrink: 0;
+      padding-bottom: 28px; /* align with card body, offset the step-number */
+    }
+
+    .arrow svg {
+      width: 40px;
+      height: 20px;
+    }
+
+    .arrow-label {
+      font-size: 0.58rem;
+      color: #475569;
+      margin-top: 4px;
+      text-align: center;
+      white-space: nowrap;
+    }
+
+    /* ── Color themes ── */
+    .blue  .step-box { background: #1e3a5f; border-color: #3b82f6; }
+    .blue  .step-title { color: #93c5fd; }
+    .blue  .step-cmd { background: #1e3a5f; color: #60a5fa; border: 1px solid #3b82f6; }
+    .blue  .output { background: #1e3a5f; color: #93c5fd; border: 1px solid #3b82f6; }
+
+    .purple .step-box { background: #2d1b4e; border-color: #8b5cf6; }
+    .purple .step-title { color: #c4b5fd; }
+    .purple .step-cmd { background: #2d1b4e; color: #a78bfa; border: 1px solid #8b5cf6; }
+    .purple .output { background: #2d1b4e; color: #c4b5fd; border: 1px solid #8b5cf6; }
+
+    .teal  .step-box { background: #0f2e2e; border-color: #14b8a6; }
+    .teal  .step-title { color: #5eead4; }
+    .teal  .step-cmd { background: #0f2e2e; color: #2dd4bf; border: 1px solid #14b8a6; }
+    .teal  .output { background: #0f2e2e; color: #5eead4; border: 1px solid #14b8a6; }
+
+    .green .step-box { background: #0f2e1a; border-color: #22c55e; }
+    .green .step-title { color: #86efac; }
+    .green .step-cmd { background: #0f2e1a; color: #4ade80; border: 1px solid #22c55e; }
+    .green .output { background: #0f2e1a; color: #86efac; border: 1px solid #22c55e; }
+
+    .orange .step-box { background: #2e1a0a; border-color: #f97316; }
+    .orange .step-title { color: #fdba74; }
+    .orange .step-cmd { background: #2e1a0a; color: #fb923c; border: 1px solid #f97316; }
+    .orange .output { background: #2e1a0a; color: #fdba74; border: 1px solid #f97316; }
+
+    /* arrow colors */
+    .arr-blue   line, .arr-blue   polyline { stroke: #3b82f6; }
+    .arr-purple line, .arr-purple polyline { stroke: #8b5cf6; }
+    .arr-teal   line, .arr-teal   polyline { stroke: #14b8a6; }
+    .arr-green  line, .arr-green  polyline { stroke: #22c55e; }
+
+    /* ── Footer note ── */
+    .note {
+      margin-top: 40px;
+      font-size: 0.7rem;
+      color: #475569;
+      text-align: center;
+    }
+    .note span { color: #64748b; font-weight: 600; }
+  </style>
+</head>
+<body>
+
+<h1>Citation Updater — Pipeline Flow</h1>
+
+<div class="pipeline">
+
+  <!-- Step 1: Download -->
+  <div class="step blue">
+    <div class="step-number">Step 1</div>
+    <div class="step-box">
+      <span class="step-icon">📥</span>
+      <div class="step-title">Download</div>
+      <code class="step-cmd">pipeline download</code>
+      <div class="step-desc">Fetches PDFs from arXiv &amp; ACL Anthology with resume support</div>
+      <div class="output">📁 data/arxiv_pdfs/</div>
+    </div>
+  </div>
+
+  <!-- Arrow 1→2 -->
+  <div class="arrow">
+    <svg class="arr-blue" viewBox="0 0 40 20" fill="none">
+      <line x1="0" y1="10" x2="32" y2="10" stroke-width="2"/>
+      <polyline points="26,4 36,10 26,16" stroke-width="2" fill="none"/>
+    </svg>
+    <div class="arrow-label">.pdf files</div>
+  </div>
+
+  <!-- Step 2: GROBID -->
+  <div class="step purple">
+    <div class="step-number">Step 2</div>
+    <div class="step-box">
+      <span class="step-icon">🔬</span>
+      <div class="step-title">GROBID</div>
+      <code class="step-cmd">pipeline grobid</code>
+      <div class="step-desc">AI server extracts full text, authors &amp; references from each PDF</div>
+      <div class="output">📄 .grobid.tei.xml</div>
+    </div>
+  </div>
+
+  <!-- Arrow 2→3 -->
+  <div class="arrow">
+    <svg class="arr-purple" viewBox="0 0 40 20" fill="none">
+      <line x1="0" y1="10" x2="32" y2="10" stroke-width="2"/>
+      <polyline points="26,4 36,10 26,16" stroke-width="2" fill="none"/>
+    </svg>
+    <div class="arrow-label">TEI-XML</div>
+  </div>
+
+  <!-- Step 3: TEI → JSON -->
+  <div class="step teal">
+    <div class="step-number">Step 3</div>
+    <div class="step-box">
+      <span class="step-icon">🔄</span>
+      <div class="step-title">TEI → JSON</div>
+      <code class="step-cmd">auto / to-json</code>
+      <div class="step-desc">Parses XML into structured citation records per paper</div>
+      <div class="output">📋 parsed_jsons/</div>
+    </div>
+  </div>
+
+  <!-- Arrow 3→4 -->
+  <div class="arrow">
+    <svg class="arr-teal" viewBox="0 0 40 20" fill="none">
+      <line x1="0" y1="10" x2="32" y2="10" stroke-width="2"/>
+      <polyline points="26,4 36,10 26,16" stroke-width="2" fill="none"/>
+    </svg>
+    <div class="arrow-label">citation JSON</div>
+  </div>
+
+  <!-- Step 4: Validate -->
+  <div class="step green">
+    <div class="step-number">Step 4</div>
+    <div class="step-box">
+      <span class="step-icon">✅</span>
+      <div class="step-title">Validate</div>
+      <code class="step-cmd">pipeline validate</code>
+      <div class="step-desc">BM25 search against DBLP; fuzzy author name comparison</div>
+      <div class="output">📊 validation_results.json</div>
+    </div>
+  </div>
+
+  <!-- Arrow 4→5 -->
+  <div class="arrow">
+    <svg class="arr-green" viewBox="0 0 40 20" fill="none">
+      <line x1="0" y1="10" x2="32" y2="10" stroke-width="2"/>
+      <polyline points="26,4 36,10 26,16" stroke-width="2" fill="none"/>
+    </svg>
+    <div class="arrow-label">discrepancies</div>
+  </div>
+
+  <!-- Step 5: Classify -->
+  <div class="step orange">
+    <div class="step-number">Step 5 ✦</div>
+    <div class="step-box">
+      <span class="step-icon">🤖</span>
+      <div class="step-title">Classify</div>
+      <code class="step-cmd">pipeline classify</code>
+      <div class="step-desc">Local LLM labels each error type (typo, wrong author, …)</div>
+      <div class="output">🏷️ classified_results.json</div>
+    </div>
+  </div>
+
+</div>
+
+<div class="note">✦ optional step &nbsp;|&nbsp; <span>DBLP XML</span> required locally for Step 4 &nbsp;|&nbsp; <span>GROBID server</span> must be running for Step 2</div>
+
+</body>
+</html>

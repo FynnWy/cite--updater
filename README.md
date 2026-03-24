@@ -148,7 +148,7 @@ source .venv310/bin/activate
 
 Run validation:
 ```bash
-python -m src.pipeline validate --input-dir data/parsed_jsons --dblp-xml data/dblp.xml --output-dir validation_results
+python -m src.pipeline validate --input-dir data/parsed_jsons --dblp-xml data/dblp.xml --output-dir data/results
 ```
 
 ### 6) Optional: LLM mismatch classification
@@ -157,8 +157,8 @@ Use `.venv` (or another environment with `requirements-llm.txt` installed):
 source .venv/bin/activate
 pip install --upgrade -r requirements.txt -r requirements-llm.txt
 python -m src.pipeline classify \
-  --input_file validation_results/validation_results.json \
-  --output_file validation_results/classified_results.json
+  --input_file data/results/validation_results.json \
+  --output_file data/results/classified_results.json
 ```
 
 Force the transformers backend explicitly:
@@ -167,16 +167,36 @@ python -m src.pipeline classify --backend transformers --transformers_device aut
 ```
 
 ## Pipeline overview
-Stage 1 - Citation extraction (requires running GROBID for `grobid`)
-- `download` - unified command: `src.models.arxiv_fetcher` + `src.models.acl_fetcher` (`--source arxiv|acl|both`)
-- `grobid` - `src.citation_extraction.grobid_runner`
-- `parse` - `src.citation_extraction.grobid_parser`
 
-Stage 2 - Name matching (no GROBID needed)
-- `validate` - `src.name_matching.validate_citations`
-- `classify` (optional) - `src.models.vllm_classifier`
+```mermaid
+flowchart LR
+    A(["📥 download\narXiv / ACL"])
+    B(["🔬 grobid\nPDF → TEI-XML"])
+    C(["🔄 TEI → JSON\nauto-export"])
+    D(["✅ validate\nDBLP matching"])
+    E(["🤖 classify\nLLM error labels"])
 
-![Reference checking pipeline](docs/refcheck_updated.png)
+    A -->|".pdf files"| B
+    B -->|"TEI-XML"| C
+    C -->|"citation JSON"| D
+    D -->|"discrepancies"| E
+
+    style A fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
+    style B fill:#2d1b4e,stroke:#8b5cf6,color:#c4b5fd
+    style C fill:#0f2e2e,stroke:#14b8a6,color:#5eead4
+    style D fill:#0f2e1a,stroke:#22c55e,color:#86efac
+    style E fill:#2e1a0a,stroke:#f97316,color:#fdba74
+```
+
+| Step | Command | Module | Output |
+|------|---------|--------|--------|
+| 1 | `pipeline download` | `arxiv_fetcher` / `acl_fetcher` | `data/arxiv_pdfs/` |
+| 2 | `pipeline grobid` | `grobid_runner` | `data/outputs/…/*.grobid.tei.xml` |
+| 3 | *(auto in grobid)* | `tei_to_json` | `data/parsed_jsons/` |
+| 4 | `pipeline validate` | `validate_citations` + `dblp_parser` | `data/results/validation_results.json` |
+| 5 ✦ | `pipeline classify` | `vllm_classifier` | `data/results/classified_results.json` |
+
+✦ optional &nbsp;·&nbsp; Steps 1–3 require a running GROBID server &nbsp;·&nbsp; Step 4 requires `data/dblp.xml`
 
 ## Repository map (roles)
 ```
@@ -189,7 +209,6 @@ src/name_matching/                  # Stage 2: DB lookups & validation
   api_caller.py
   analyze_matches.py
   validate_citations.py
-  semantic_scholar.py
 src/models/                         # Optional LLM classification
   acl_fetcher.py
   arxiv_fetcher.py
@@ -199,7 +218,7 @@ src/parser/dblp_parser.py           # Shared DBLP utilities
 examples/                           # Demos & sample outputs
 docs/refcheck_updated.png           # Pipeline graphic (inline preview)
 docs/refcheck_updated.pdf           # High-res PDF version of the pipeline graphic
-validation_results/                 # Outputs written by validate/classify
+data/results/                       # Outputs written by validate/classify
 requirements.txt
 requirements-acl.txt               # Optional deps for ACL downloader
 requirements-llm.txt               # Optional deps for classify (vLLM/transformers)

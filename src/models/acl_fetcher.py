@@ -21,6 +21,8 @@ import requests
 from fuzzywuzzy import fuzz
 from tqdm import tqdm
 
+from src.utils import download_pdf
+
 
 def setup_logging() -> None:
     """Configure basic logging."""
@@ -28,21 +30,6 @@ def setup_logging() -> None:
         level=logging.INFO,
         format="%(asctime)s - %(levelname)s - %(message)s",
     )
-
-
-def download_pdf(url: str, output_path: Path) -> bool:
-    """Download a PDF from a URL."""
-    try:
-        response = requests.get(url, stream=True, timeout=30)
-        response.raise_for_status()
-
-        with output_path.open("wb") as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-        return True
-    except requests.exceptions.RequestException as exc:
-        logging.error("Error downloading PDF from %s: %s", url, exc)
-        return False
 
 
 def query_arxiv_by_title(title: str, match_threshold: int = 90) -> bool:

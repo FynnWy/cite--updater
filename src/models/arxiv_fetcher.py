@@ -37,6 +37,8 @@ from tqdm import tqdm
 from datetime import datetime
 from nameparser import HumanName
 
+from src.utils import download_pdf
+
 def clean_author_name(name: str) -> str:
     """
     Clean author names by removing four-digit suffixes and other numeric patterns.
@@ -278,31 +280,6 @@ def query_arxiv_by_title(title: str, match_threshold: int = 85) -> Optional[Dict
         logging.error(f"Error querying arXiv: {e}")
         return None
 
-def download_pdf(url: str, output_path: Path) -> bool:
-    """
-    Download a PDF from a URL.
-
-    Args:
-        url: PDF URL
-        output_path: Path to save the PDF
-
-    Returns:
-        True if download successful, False otherwise
-    """
-    try:
-        response = requests.get(url, stream=True, timeout=30)
-        response.raise_for_status()
-
-        with open(output_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-
-        logging.info(f"Downloaded PDF to {output_path}")
-        return True
-
-    except Exception as e:
-        logging.error(f"Error downloading PDF: {e}")
-        return False
 
 def process_papers(conference_data: Dict[str, Any],
                   output_dir: str,
