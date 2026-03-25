@@ -171,32 +171,36 @@ python -m src.pipeline classify --backend transformers --transformers_device aut
 ```mermaid
 flowchart LR
     A(["📥 download\narXiv / ACL"])
-    B(["🔬 grobid\nPDF → TEI-XML"])
-    C(["🔄 TEI → JSON\nauto-export"])
+    B(["🔬 grobid\nPDF → TEI + JSON"])
     D(["✅ validate\nDBLP matching"])
     E(["🤖 classify\nLLM error labels"])
+    F(["📋 parse\nTEI → CSV"])
+    G(["🔄 to-json\nTEI → JSON"])
 
     A -->|".pdf files"| B
-    B -->|"TEI-XML"| C
-    C -->|"citation JSON"| D
+    B -->|"JSON"| D
     D -->|"discrepancies"| E
+    B -.->|"optional"| F
+    B -.->|"optional"| G
 
     style A fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
     style B fill:#2d1b4e,stroke:#8b5cf6,color:#c4b5fd
-    style C fill:#0f2e2e,stroke:#14b8a6,color:#5eead4
     style D fill:#0f2e1a,stroke:#22c55e,color:#86efac
     style E fill:#2e1a0a,stroke:#f97316,color:#fdba74
+    style F fill:#1a1a2e,stroke:#6b7280,color:#9ca3af
+    style G fill:#1a1a2e,stroke:#6b7280,color:#9ca3af
 ```
 
 | Step | Command | Module | Output |
 |------|---------|--------|--------|
 | 1 | `pipeline download` | `arxiv_fetcher` / `acl_fetcher` | `data/arxiv_pdfs/` |
-| 2 | `pipeline grobid` | `grobid_runner` | `data/outputs/…/*.grobid.tei.xml` |
-| 3 | *(auto in grobid)* | `tei_to_json` | `data/parsed_jsons/` |
-| 4 | `pipeline validate` | `validate_citations` + `dblp_parser` | `data/results/validation_results.json` |
-| 5 ✦ | `pipeline classify` | `vllm_classifier` | `data/results/classified_results.json` |
+| 2 | `pipeline grobid` | `grobid_runner` | `data/outputs/…/*.tei.xml` + `data/parsed_jsons/` |
+| 3 | `pipeline validate` | `validate_citations` + `dblp_parser` | `data/results/validation_results.json` |
+| 4 ✦ | `pipeline classify` | `vllm_classifier` | `data/results/classified_results.json` |
+| — ✦ | `pipeline parse` | `grobid_parser` | `data/arxiv_metadata.csv` |
+| — ✦ | `pipeline to-json` | `tei_to_json` | `data/parsed_jsons/` |
 
-✦ optional &nbsp;·&nbsp; Steps 1–3 require a running GROBID server &nbsp;·&nbsp; Step 4 requires `data/dblp.xml`
+✦ optional &nbsp;·&nbsp; Steps 1–2 require a running GROBID server &nbsp;·&nbsp; Step 3 requires `data/dblp.xml`
 
 ## Repository map (roles)
 ```
