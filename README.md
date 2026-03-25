@@ -1,8 +1,49 @@
 # Academic Paper Processing Toolkit
 
-Two-stage pipeline aligned with the paper methodology:
-- **Stage 1 - Citation Extraction**: fetch PDFs, run GROBID full-text (PDF -> TEI), convert TEI to TSV/CSV.
-- **Stage 2 - Name Matching**: compare extracted citations against authoritative databases (DBLP, ACL Anthology, arXiv) and optionally classify mismatches with an LLM.
+## Scientific abstract
+This repository operationalizes the empirical analysis pipeline used in *Making a Name for Myself: On Academic Naming Policies and their Impact* (FAccT 2026). In the paper’s mixed-method design, this codebase covers the large-scale citation-analysis branch (not the survey/interview branch). The goal is to measure how often cited author names diverge from authoritative records across major computer-science venues and years. We first construct a citation evidence base from paper PDFs, then compare cited names against trusted bibliographic sources (DBLP, ACL Anthology, arXiv) to detect discrepancies at scale. The resulting outputs support quantitative analyses of citation-name errors and downstream error characterization.
+
+## Quickstart
+Minimal end-to-end run (macOS/Linux):
+
+```bash
+# 1) Stage-1 environment
+python3.11 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+# 2) Required DBLP source for validation
+mkdir -p data
+curl -L -o data/dblp.xml.gz https://dblp.org/xml/dblp.xml.gz
+gunzip -f data/dblp.xml.gz
+
+# 3) Download PDFs (arXiv + ACL)
+python -m src.pipeline download --source both --output-dir data/arxiv_pdfs --acl-output-dir data/acl_pdfs
+
+# 4) Start GROBID (Terminal A)
+docker run --rm --init -p 8070:8070 grobid/grobid:0.8.0
+
+# 5) Run GROBID extraction (Terminal B)
+source .venv/bin/activate
+export GROBID_URL=http://localhost:8070/api
+python -m src.pipeline grobid --input-dir data/arxiv_pdfs --output-dir data/outputs/arxiv_pdfs
+
+# 6) Stage-2 environment + validation
+python3.10 -m venv .venv310
+source .venv310/bin/activate
+pip install -r requirements.txt
+pip install retriv
+python -m src.pipeline validate \
+  --input-dir data/parsed_jsons \
+  --dblp-xml data/dblp.xml \
+  --sources dblp,acl,arxiv \
+  --similarity-method damerau \
+  --output-dir data/results
+```
+
+## Two-stage methodology intent
+- **Stage 1 - Citation evidence construction**: build a reproducible citation corpus from venue PDFs so author-name mentions are available in a consistent machine-readable form for analysis.
+- **Stage 2 - Discrepancy measurement and attribution**: compare cited names against authoritative bibliographic records to quantify name-related citation errors across venues/years and prepare outputs for detailed error analysis (including optional LLM-assisted categorization).
 
 All commands are exposed via one CLI: `python -m src.pipeline ...`.
 
@@ -64,7 +105,7 @@ pip install retriv
 python -c "from retriv import SparseRetriever; print('retriv ok')"
 ```
 
-### 2) Initialize DBLP data
+### 2) Initialize data sources
 Download the DBLP XML dump (required for Stage 2 validation):
 ```bash
 mkdir -p data
@@ -72,7 +113,8 @@ curl -L -o data/dblp.xml.gz https://dblp.org/xml/dblp.xml.gz
 gunzip -f data/dblp.xml.gz
 ```
 
-### 3) Optional: scrape DBLP conference pages
+Optional: scrape DBLP conference pages.
+
 Basic run:
 ```bash
 python -m src.citation_extraction.dblp_scraper --output-dir data/dblp_conferences
@@ -87,8 +129,9 @@ python -m src.citation_extraction.dblp_scraper \
   --delay 2.0
 ```
 
-### 4) Stage 1: Citation extraction
-#### 4.1 Download PDFs
+### 3) Stage 1: Build citation evidence from PDFs
+Download PDFs.
+
 arXiv only:
 ```bash
 python -m src.pipeline download --source arxiv --output-dir data/arxiv_pdfs
@@ -104,7 +147,8 @@ Both sources in one command:
 python -m src.pipeline download --source both --output-dir data/arxiv_pdfs --acl-output-dir data/acl_pdfs
 ```
 
-#### 4.2 Run GROBID (only needed for this step)
+Run GROBID (only needed for this step).
+
 Install Docker Desktop if needed (example for macOS/Homebrew):
 ```bash
 brew install --cask docker
@@ -144,7 +188,7 @@ If you already have a fine-tuned GROBID config, register it for automatic fallba
 python -m src.pipeline grobid --finetuned-config-path path/to/config.json
 ```
 
-#### 4.3 Parse TEI XML to tabular metadata
+Parse TEI XML to tabular metadata:
 ```bash
 python -m src.pipeline parse \
   --input-dir data/outputs/arxiv_pdfs \
@@ -152,13 +196,13 @@ python -m src.pipeline parse \
   --output-csv data/arxiv_metadata.csv
 ```
 
-#### 4.4 Optional: export TEI XML to JSON manually
+Optional: export TEI XML to JSON manually.
 `grobid` already exports JSON by default. Run this only if you skipped JSON export or want to regenerate it:
 ```bash
 python -m src.pipeline to-json --input-dir data/outputs/arxiv_pdfs --output-dir data/parsed_jsons
 ```
 
-### 5) Stage 2: Validate citations against databases
+### 4) Stage 2: Measure name discrepancies against authoritative sources
 Activate `.venv310` (created in Step 1):
 ```bash
 source .venv310/bin/activate
@@ -179,7 +223,7 @@ Notes:
 - If `acl` is included in `--sources`, install optional ACL deps: `pip install -r requirements.txt -r requirements-acl.txt`.
 - Similarity is configurable via `--similarity-method` (`fuzz` / `fuzz.ratio` / `damerau`).
 
-### 6) Optional: LLM mismatch classification
+### 5) Optional: LLM mismatch classification
 Use `.venv` (or another environment with `requirements-llm.txt` installed):
 ```bash
 source .venv/bin/activate
