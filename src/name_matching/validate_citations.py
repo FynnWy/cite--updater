@@ -1,19 +1,22 @@
 """
 Citation Author Validation Script
 
-This script validates citation authors in parsed JSON files against DBLP database.
-For each reference in the JSON files, it queries DBLP by title and compares
-the authors to detect incorrect citations.
+This script validates citation authors in parsed JSON files against selected
+reference databases (DBLP, ACL Anthology, arXiv). For each reference, it
+queries the configured sources by title and compares author names to detect
+incorrect citations.
 
 Usage:
     python -m src.name_matching.validate_citations [options]
     
 Options:
     --input-dir DIR       Directory containing parsed JSON files (default: data/parsed_jsons)
-    --dblp-xml FILE       Path to DBLP XML file (default: data/dblp.xml)
+    --dblp-xml FILE       Path to DBLP XML file (required when DBLP source is used)
+    --sources LIST        Comma-separated sources: dblp,acl,arxiv (default: dblp,acl,arxiv)
     --output FILE         Output JSON file path (default: citation_validation_results.json)
     --num-files N         Number of JSON files to process (default: 20)
-    --threshold N         Title match threshold for DBLP search (default: 5.0)
+    --threshold N         Retrieval threshold (DBLP BM25; default: 5.0)
+    --similarity-method   String similarity metric: fuzz/fuzz.ratio or damerau
 """
 
 import json
@@ -53,12 +56,28 @@ from .analyze_matches import (
     is_compound_initial
 )
 from ..parser.dblp_parser import DblpParser
+from .sources import (
+    AVAILABLE_SOURCES,
+    ACLAnthologySource,
+    ArXivSource,
+    CitationSource,
+    DBLPSource,
+    SourceMatch,
+)
 from nameparser import HumanName
 from rapidfuzz import fuzz
+from rapidfuzz.distance import DamerauLevenshtein
 from unidecode import unidecode
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
+
+DEFAULT_SOURCES = ",".join(AVAILABLE_SOURCES)
+SIMILARITY_METHODS = ("fuzz", "damerau")
+DEFAULT_SIMILARITY_METHOD = "fuzz"
+DEFAULT_NAME_PART_FUZZ_THRESHOLD = 85.0
+DEFAULT_NAME_PART_DAMERAU_MAX_DISTANCE = 1
 
 
 def normalize_last_name_with_prefixes(last_name: str) -> tuple[str, str]:
@@ -192,28 +211,133 @@ def handle_middle_initial_match(ref_author: Dict[str, str], dblp_author: Dict[st
     return False
 
 
-def calculate_title_similarity(title1: str, title2: str) -> float:
+def calculate_title_similarity(
+    title1: str,
+    title2: str,
+    similarity_method: str = DEFAULT_SIMILARITY_METHOD,
+) -> float:
     """
-    Calculate string similarity between two titles using rapidfuzz.
-    
-    Args:
-        title1: First title string
-        title2: Second title string
-        
-    Returns:
-        Similarity score between 0 and 100
+    Calculate title similarity score between 0 and 100.
+
+    ``fuzz`` uses ``fuzz.ratio``.
+    ``damerau`` uses normalized Damerau-Levenshtein distance converted to 0-100.
     """
-    # Normalize titles: lowercase and remove extra whitespace
     t1 = ' '.join(title1.lower().split())
     t2 = ' '.join(title2.lower().split())
-    
-    # Use ratio for overall similarity
-    return fuzz.ratio(t1, t2)
+
+    if similarity_method == "fuzz":
+        return float(fuzz.ratio(t1, t2))
+
+    if similarity_method == "damerau":
+        max_len = max(len(t1), len(t2))
+        if max_len == 0:
+            return 100.0
+        distance = DamerauLevenshtein.distance(t1, t2)
+        return max(0.0, (1.0 - (distance / max_len)) * 100.0)
+
+    raise ValueError(
+        f"Unsupported similarity method: {similarity_method}. "
+        f"Expected one of: {', '.join(SIMILARITY_METHODS)}"
+    )
 
 
-def check_author_with_minimum_lists(ref_authors: List[Dict[str, str]], 
-                                    dblp_authors: List[Dict[str, str]],
-                                    title: str, max_authors: int = 10) -> Dict[str, Any]:
+def normalize_name_parts(text: str) -> List[str]:
+    """
+    Normalize name text into alphabetic parts.
+
+    This mirrors the historical part-based normalization used in
+    ``analyze_matches.py`` before Damerau distance checks.
+    """
+    normalized = unidecode((text or "").lower())
+    parts = normalized.replace('-', ' ').split()
+    cleaned_parts = [''.join(c for c in part if c.isalpha()) for part in parts]
+    return [part for part in cleaned_parts if part]
+
+
+def parts_are_similar(
+    part1: str,
+    part2: str,
+    similarity_method: str = DEFAULT_SIMILARITY_METHOD,
+    fuzz_threshold: float = DEFAULT_NAME_PART_FUZZ_THRESHOLD,
+    damerau_max_distance: int = DEFAULT_NAME_PART_DAMERAU_MAX_DISTANCE,
+) -> bool:
+    """
+    Compare two normalized name parts via fuzz ratio or Damerau-Levenshtein.
+
+    The Damerau branch reuses the historical repository logic:
+    - ignore one-character fuzziness
+    - reject if length difference exceeds ``max_distance``
+    - accept if ``DamerauLevenshtein.distance <= max_distance``
+    """
+    if not part1 or not part2:
+        return False
+
+    if len(part1) <= 1 or len(part2) <= 1:
+        return part1 == part2
+
+    if similarity_method == "fuzz":
+        return fuzz.ratio(part1, part2) >= fuzz_threshold
+
+    if similarity_method == "damerau":
+        if abs(len(part1) - len(part2)) > damerau_max_distance:
+            return False
+        return DamerauLevenshtein.distance(part1, part2) <= damerau_max_distance
+
+    raise ValueError(
+        f"Unsupported similarity method: {similarity_method}. "
+        f"Expected one of: {', '.join(SIMILARITY_METHODS)}"
+    )
+
+
+def names_match_by_parts(
+    ref_author: Dict[str, str],
+    dblp_author: Dict[str, str],
+    similarity_method: str = DEFAULT_SIMILARITY_METHOD,
+    fuzz_threshold: float = DEFAULT_NAME_PART_FUZZ_THRESHOLD,
+    damerau_max_distance: int = DEFAULT_NAME_PART_DAMERAU_MAX_DISTANCE,
+) -> bool:
+    """
+    Compare given-name parts (first+middle) with configurable similarity method.
+
+    Last names are intentionally not checked here and should be checked separately.
+    """
+    ref_given = f"{ref_author.get('first_name', '')} {ref_author.get('middle_name', '')}".strip()
+    dblp_given = f"{dblp_author.get('first_name', '')} {dblp_author.get('middle_name', '')}".strip()
+
+    ref_parts = normalize_name_parts(ref_given)
+    dblp_parts = normalize_name_parts(dblp_given)
+
+    if not ref_parts or not dblp_parts:
+        return False
+
+    # Compare each token in the shorter side against the longer side.
+    if len(ref_parts) > len(dblp_parts):
+        ref_parts, dblp_parts = dblp_parts, ref_parts
+
+    for ref_part in ref_parts:
+        if not any(
+            parts_are_similar(
+                ref_part,
+                dblp_part,
+                similarity_method=similarity_method,
+                fuzz_threshold=fuzz_threshold,
+                damerau_max_distance=damerau_max_distance,
+            )
+            for dblp_part in dblp_parts
+        ):
+            return False
+    return True
+
+
+def check_author_with_minimum_lists(
+    ref_authors: List[Dict[str, str]],
+    dblp_authors: List[Dict[str, str]],
+    title: str,
+    max_authors: int = 10,
+    similarity_method: str = DEFAULT_SIMILARITY_METHOD,
+    name_part_fuzz_threshold: float = DEFAULT_NAME_PART_FUZZ_THRESHOLD,
+    name_part_damerau_max_distance: int = DEFAULT_NAME_PART_DAMERAU_MAX_DISTANCE,
+) -> Dict[str, Any]:
     """
     Check author lists by comparing only the first N authors (default: 10).
     This handles cases where authors don't include the full author list.
@@ -223,6 +347,9 @@ def check_author_with_minimum_lists(ref_authors: List[Dict[str, str]],
         dblp_authors: Normalized authors from DBLP
         title: Paper title for context
         max_authors: Maximum number of authors to compare (default: 10)
+        similarity_method: ``fuzz`` or ``damerau`` for part-based fallback matching
+        name_part_fuzz_threshold: Minimum fuzz ratio for part matching when method=fuzz
+        name_part_damerau_max_distance: Maximum Damerau distance for part matching when method=damerau
         
     Returns:
         Dictionary with:
@@ -320,6 +447,28 @@ def check_author_with_minimum_lists(ref_authors: List[Dict[str, str]],
             
             # Also check for matches with middle initials (e.g., "Ed Chi" vs "Ed H. Chi")
             if handle_middle_initial_match(ref_author, dblp_author):
+                matches.append((i, j, ref_author, dblp_author))
+                matched_ref_indices.add(i)
+                matched_dblp_indices.add(j)
+                break
+
+            # Historical fallback: part-based given-name comparison with configurable
+            # fuzz/Damerau metric, only when last names already align.
+            ref_last_base, _ = normalize_last_name_with_prefixes(ref_last)
+            dblp_last_base, _ = normalize_last_name_with_prefixes(dblp_last)
+            last_names_match = (
+                names_match_with_accents(ref_last, dblp_last)
+                or names_match_with_accents(ref_last_base, dblp_last_base)
+                or names_match_with_accents(ref_last, dblp_last_base)
+                or names_match_with_accents(ref_last_base, dblp_last)
+            )
+            if last_names_match and names_match_by_parts(
+                ref_author,
+                dblp_author,
+                similarity_method=similarity_method,
+                fuzz_threshold=name_part_fuzz_threshold,
+                damerau_max_distance=name_part_damerau_max_distance,
+            ):
                 matches.append((i, j, ref_author, dblp_author))
                 matched_ref_indices.add(i)
                 matched_dblp_indices.add(j)
@@ -473,6 +622,16 @@ def check_author_with_minimum_lists(ref_authors: List[Dict[str, str]],
                 # Also check for middle initial matches (e.g., "Ed" vs "Ed H.")
                 if not first_names_match:
                     first_names_match = handle_middle_initial_match(ref_author, dblp_author)
+
+                # Reuse historical part-based comparison fallback (configurable metric).
+                if not first_names_match:
+                    first_names_match = names_match_by_parts(
+                        ref_author,
+                        dblp_author,
+                        similarity_method=similarity_method,
+                        fuzz_threshold=name_part_fuzz_threshold,
+                        damerau_max_distance=name_part_damerau_max_distance,
+                    )
                 
                 if not first_names_match:
                     # Check if first names match by initials (including compound initials like "K.-T" matching "Kwang-Ting")
@@ -527,6 +686,15 @@ def check_author_with_minimum_lists(ref_authors: List[Dict[str, str]],
             # Also check for middle initial matches
             if not first_names_match:
                 first_names_match = handle_middle_initial_match(ref_author, dblp_author)
+
+            if not first_names_match:
+                first_names_match = names_match_by_parts(
+                    ref_author,
+                    dblp_author,
+                    similarity_method=similarity_method,
+                    fuzz_threshold=name_part_fuzz_threshold,
+                    damerau_max_distance=name_part_damerau_max_distance,
+                )
             
             if first_names_match:
                 # Check if last names match with accent normalization and prefix handling
@@ -751,30 +919,131 @@ def find_json_files(input_dir: str, num_files: Optional[int] = None) -> List[str
     return json_files
 
 
-def validate_reference(reference: Dict[str, Any], dblp_parser: DblpParser,
-                      threshold: float = 5.0, title_similarity_threshold: float = 95.0) -> Dict[str, Any]:
+def parse_source_names(value: str) -> List[str]:
+    """Parse and validate comma-separated source names from CLI input."""
+    raw_names = [item.strip().lower() for item in value.split(",") if item.strip()]
+    if not raw_names:
+        raise argparse.ArgumentTypeError(
+            "At least one source is required. Allowed values: "
+            + ", ".join(AVAILABLE_SOURCES)
+        )
+
+    invalid = sorted({name for name in raw_names if name not in AVAILABLE_SOURCES})
+    if invalid:
+        raise argparse.ArgumentTypeError(
+            f"Unknown source(s): {', '.join(invalid)}. "
+            f"Allowed values: {', '.join(AVAILABLE_SOURCES)}"
+        )
+
+    deduped: List[str] = []
+    seen = set()
+    for name in raw_names:
+        if name not in seen:
+            deduped.append(name)
+            seen.add(name)
+    return deduped
+
+
+def parse_similarity_method(value: str) -> str:
     """
-    Validate a single reference by querying DBLP and comparing authors.
+    Parse similarity method with support for ``fuzz.ratio`` alias.
+    """
+    normalized = (value or "").strip().lower()
+    if normalized in {"fuzz", "fuzz.ratio"}:
+        return "fuzz"
+    if normalized in {"damerau", "damerau_levenshtein", "damerau-levenshtein"}:
+        return "damerau"
+    raise argparse.ArgumentTypeError(
+        f"Unknown similarity method: {value}. "
+        f"Allowed: {', '.join(SIMILARITY_METHODS)} (and alias: fuzz.ratio)"
+    )
+
+
+def initialize_sources(source_names: List[str], dblp_xml: str) -> List[CitationSource]:
+    """Initialize configured citation sources."""
+    sources: List[CitationSource] = []
+
+    if "dblp" in source_names:
+        if not os.path.exists(dblp_xml):
+            raise FileNotFoundError(f"DBLP XML file not found: {dblp_xml}")
+
+        logger.info("Initializing DBLP parser from: %s", dblp_xml)
+        dblp_parser = DblpParser(
+            xml_path=dblp_xml,
+            cache_dir="dblp_cache",
+            index_name="dblp_index",
+        )
+        sources.append(DBLPSource(dblp_parser))
+
+    if "acl" in source_names:
+        sources.append(ACLAnthologySource())
+
+    if "arxiv" in source_names:
+        sources.append(ArXivSource())
+
+    return sources
+
+
+def find_best_database_match(
+    title: str,
+    sources: List[CitationSource],
+    threshold: float = 5.0,
+    similarity_method: str = DEFAULT_SIMILARITY_METHOD,
+) -> tuple[Optional[SourceMatch], float]:
+    """Find the best title match across the configured sources."""
+    best_match: Optional[SourceMatch] = None
+    best_similarity = 0.0
+
+    for source in sources:
+        candidate = source.search_by_title(title, threshold=threshold)
+        if not candidate:
+            continue
+
+        similarity = calculate_title_similarity(
+            title,
+            candidate.title,
+            similarity_method=similarity_method,
+        )
+        if best_match is None or similarity > best_similarity:
+            best_match = candidate
+            best_similarity = similarity
+
+    return best_match, best_similarity
+
+
+def validate_reference(
+    reference: Dict[str, Any],
+    sources: List[CitationSource],
+    threshold: float = 5.0,
+    title_similarity_threshold: float = 95.0,
+    similarity_method: str = DEFAULT_SIMILARITY_METHOD,
+    name_part_fuzz_threshold: float = DEFAULT_NAME_PART_FUZZ_THRESHOLD,
+    name_part_damerau_max_distance: int = DEFAULT_NAME_PART_DAMERAU_MAX_DISTANCE,
+) -> Dict[str, Any]:
+    """
+    Validate a single reference by querying configured sources and comparing authors.
     
     Args:
         reference: Reference dictionary with 'title' and 'authors' keys
-        dblp_parser: Initialized DblpParser instance
-        threshold: BM25 score threshold for DBLP title matching
+        sources: Initialized source instances to query for title matches
+        threshold: Source-specific retrieval threshold (DBLP BM25, optional elsewhere)
         title_similarity_threshold: Minimum string similarity (0-100) between titles to consider match
         
     Returns:
         Dictionary with validation results:
             - reference: Original reference data
-            - dblp_match: DBLP publication data if found
+            - dblp_match: Legacy field containing matched publication data
+            - matched_source: Name of selected source ('dblp', 'acl', or 'arxiv')
             - authors_match: Boolean indicating if authors match
             - mismatches: List of mismatch descriptions
             - error_classifications: List of error types (first_name_mismatch, last_name_mismatch, etc.)
             - title_similarity: Similarity score between titles
-            - validation_status: 'matched', 'no_dblp_match', 'title_mismatch', 'author_mismatch', or 'error'
+            - validation_status: 'matched', 'no_database_match', 'title_mismatch', 'author_mismatch', or 'error'
     """
     result = {
         'reference': reference,
         'dblp_match': None,
+        'matched_source': None,
         'authors_match': False,
         'mismatches': [],
         'error_classifications': [],
@@ -795,37 +1064,42 @@ def validate_reference(reference: Dict[str, Any], dblp_parser: DblpParser,
         result['mismatches'].append('Skipped validation for non-academic reference (Wikipedia)')
         return result
     
-    # Query DBLP for the paper
+    # Query configured sources for the best title match
     try:
-        dblp_result = dblp_parser.search_by_title(title, threshold=threshold)
-        
-        if not dblp_result:
-            result['validation_status'] = 'no_dblp_match'
-            result['mismatches'].append(f'No DBLP match found for title: {title[:100]}')
-            return result
-        
-        dblp_title = dblp_result.get('title', '')
-        
-        # Calculate title similarity
-        title_similarity = calculate_title_similarity(title, dblp_title)
+        best_match, title_similarity = find_best_database_match(
+            title,
+            sources,
+            threshold=threshold,
+            similarity_method=similarity_method,
+        )
         result['title_similarity'] = title_similarity
-        
+
+        if not best_match:
+            result['validation_status'] = 'no_database_match'
+            result['mismatches'].append(f'No database match found for title: {title[:100]}')
+            return result
+
+        matched_title = best_match.title
+
         # Only consider if title similarity is >= threshold
         if title_similarity < title_similarity_threshold:
             result['validation_status'] = 'title_mismatch'
             result['mismatches'].append(
                 f'Title similarity too low: {title_similarity:.1f}% '
                 f'(threshold: {title_similarity_threshold}%). '
-                f'Reference: "{title[:100]}", DBLP: "{dblp_title[:100]}"'
+                f'Reference: "{title[:100]}", Matched ({best_match.source}): "{matched_title[:100]}"'
             )
             return result
-        
+
         result['dblp_match'] = {
-            'title': dblp_title,
-            'authors': dblp_result.get('authors', []),
-            'year': dblp_result.get('year', ''),
-            'venue': dblp_result.get('venue', '')
+            'source': best_match.source,
+            'title': matched_title,
+            'authors': best_match.authors,
+            'year': best_match.year,
+            'venue': best_match.venue,
+            'metadata': best_match.metadata,
         }
+        result['matched_source'] = best_match.source
         
         # Normalize authors from reference
         ref_authors_raw = reference.get('authors', [])
@@ -834,16 +1108,18 @@ def validate_reference(reference: Dict[str, Any], dblp_parser: DblpParser,
             ref_authors_raw = [ref_authors_raw]
         ref_authors_normalized = [normalize_author_name(author) for author in ref_authors_raw]
         
-        # Normalize authors from DBLP
-        dblp_authors_raw = dblp_result.get('authors', [])
-        dblp_authors_normalized = [normalize_author_name(author) for author in dblp_authors_raw]
+        # Normalize authors from selected source
+        matched_authors_normalized = [normalize_author_name(author) for author in best_match.authors]
         
         # Check if authors match using first 10 authors comparison
         author_check_result = check_author_with_minimum_lists(
             ref_authors_normalized,
-            dblp_authors_normalized,
+            matched_authors_normalized,
             title,
-            max_authors=10
+            max_authors=10,
+            similarity_method=similarity_method,
+            name_part_fuzz_threshold=name_part_fuzz_threshold,
+            name_part_damerau_max_distance=name_part_damerau_max_distance,
         )
         
         result['authors_match'] = author_check_result['matches']
@@ -896,15 +1172,23 @@ def clean_validation_result(result: Dict[str, Any], source_info: Dict[str, Any])
     return result
 
 
-def process_json_file(json_path: str, dblp_parser: DblpParser,
-                     threshold: float = 5.0, title_similarity_threshold: float = 95.0) -> Dict[str, Any]:
+def process_json_file(
+    json_path: str,
+    sources: List[CitationSource],
+    threshold: float = 5.0,
+    title_similarity_threshold: float = 95.0,
+    similarity_method: str = DEFAULT_SIMILARITY_METHOD,
+    name_part_fuzz_threshold: float = DEFAULT_NAME_PART_FUZZ_THRESHOLD,
+    name_part_damerau_max_distance: int = DEFAULT_NAME_PART_DAMERAU_MAX_DISTANCE,
+) -> Dict[str, Any]:
     """
     Process a single JSON file and validate all its references.
     
     Args:
         json_path: Path to JSON file
-        dblp_parser: Initialized DblpParser instance
-        threshold: BM25 score threshold for DBLP title matching
+        sources: Initialized citation lookup sources
+        threshold: Source-specific retrieval threshold (DBLP BM25, optional elsewhere)
+        similarity_method: String similarity method (``fuzz`` or ``damerau``)
         
     Returns:
         Dictionary with file processing results:
@@ -913,7 +1197,7 @@ def process_json_file(json_path: str, dblp_parser: DblpParser,
             - validated_count: Number of references successfully validated
             - matched_count: Number of references with matching authors
             - mismatch_count: Number of references with author mismatches
-            - no_match_count: Number of references not found in DBLP
+            - no_match_count: Number of references without usable database match
             - error_count: Number of references with errors
             - results: List of validation results for each reference
     """
@@ -956,7 +1240,13 @@ def process_json_file(json_path: str, dblp_parser: DblpParser,
                     Path(json_path).name,
                 )
             validation_result = validate_reference(
-                ref, dblp_parser, threshold, title_similarity_threshold
+                ref,
+                sources,
+                threshold,
+                title_similarity_threshold,
+                similarity_method=similarity_method,
+                name_part_fuzz_threshold=name_part_fuzz_threshold,
+                name_part_damerau_max_distance=name_part_damerau_max_distance,
             )
             
             # Clean result (adds source info and removes unwanted fields)
@@ -973,7 +1263,7 @@ def process_json_file(json_path: str, dblp_parser: DblpParser,
                 file_result['validated_count'] += 1
             elif status == 'title_mismatch':
                 file_result['no_match_count'] += 1
-            elif status == 'no_dblp_match':
+            elif status in {'no_dblp_match', 'no_database_match'}:
                 file_result['no_match_count'] += 1
             elif status == 'error':
                 file_result['error_count'] += 1
@@ -982,7 +1272,7 @@ def process_json_file(json_path: str, dblp_parser: DblpParser,
         
         logger.info(f"Completed {json_path}: {file_result['matched_count']} matched, "
                    f"{file_result['mismatch_count']} mismatches, "
-                   f"{file_result['no_match_count']} no DBLP match")
+                   f"{file_result['no_match_count']} no database match")
         
     except Exception as e:
         logger.error(f"Error processing file {json_path}: {e}")
@@ -994,14 +1284,23 @@ def process_json_file(json_path: str, dblp_parser: DblpParser,
 def main():
     """Main function to run citation validation."""
     parser = argparse.ArgumentParser(
-        description='Validate citation authors against DBLP database.',
+        description='Validate citation authors against selected reference databases.',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     
     parser.add_argument('--input-dir', type=str, default='data/parsed_jsons',
                        help='Directory containing parsed JSON files')
     parser.add_argument('--dblp-xml', type=str, default='data/dblp.xml',
-                       help='Path to DBLP XML file (default: data/dblp.xml)')
+                       help='Path to DBLP XML file (required when "dblp" source is enabled)')
+    parser.add_argument(
+        '--sources',
+        type=str,
+        default=DEFAULT_SOURCES,
+        help=(
+            'Comma-separated sources to query. '
+            f'Allowed: {", ".join(AVAILABLE_SOURCES)}'
+        ),
+    )
     parser.add_argument('--output-dir', type=str, default='validation_results',
                        help='Output directory for validation results (default: validation_results)')
     parser.add_argument('--num-files', type=int, default=None,
@@ -1010,28 +1309,51 @@ def main():
                        help='BM25 score threshold for DBLP title matching')
     parser.add_argument('--title-similarity-threshold', type=float, default=95.0,
                        help='Minimum string similarity (0-100) between titles to consider match')
+    parser.add_argument(
+        '--similarity-method',
+        type=str,
+        default=DEFAULT_SIMILARITY_METHOD,
+        help='Similarity backend: fuzz, fuzz.ratio, or damerau',
+    )
+    parser.add_argument(
+        '--name-part-fuzz-threshold',
+        type=float,
+        default=DEFAULT_NAME_PART_FUZZ_THRESHOLD,
+        help='Part-level fuzz threshold (0-100) used when similarity-method=fuzz',
+    )
+    parser.add_argument(
+        '--name-part-damerau-max-distance',
+        type=int,
+        default=DEFAULT_NAME_PART_DAMERAU_MAX_DISTANCE,
+        help='Part-level Damerau distance threshold used when similarity-method=damerau',
+    )
     
     args = parser.parse_args()
+    try:
+        args.sources = parse_source_names(args.sources)
+        args.similarity_method = parse_similarity_method(args.similarity_method)
+    except argparse.ArgumentTypeError as exc:
+        parser.error(str(exc))
+
+    if args.name_part_damerau_max_distance < 0:
+        parser.error("--name-part-damerau-max-distance must be >= 0")
     
     # Validate inputs
     if not os.path.exists(args.input_dir):
         parser.error(f"Input directory not found: {args.input_dir}")
-    
-    if not os.path.exists(args.dblp_xml):
-        parser.error(f"DBLP XML file not found: {args.dblp_xml}")
-    
-    logger.info("Initializing DBLP parser from: %s", args.dblp_xml)
 
-    # Initialize DBLP parser
     try:
-        dblp_parser = DblpParser(
-            xml_path=args.dblp_xml,
-            cache_dir="dblp_cache",
-            index_name="dblp_index"
-        )
+        sources = initialize_sources(args.sources, args.dblp_xml)
     except Exception as e:
-        logger.error(f"Failed to initialize DBLP parser: {e}")
+        logger.error(f"Failed to initialize sources ({', '.join(args.sources)}): {e}")
         return
+
+    if not sources:
+        logger.error("No sources initialized. Nothing to validate.")
+        return
+
+    logger.info("Using sources: %s", ", ".join(source.source_name for source in sources))
+    logger.info("Using similarity method: %s", args.similarity_method)
     
     # Find JSON files to process
     json_files = find_json_files(args.input_dir, args.num_files)
@@ -1061,7 +1383,13 @@ def main():
     for idx, json_file in enumerate(progress, start=1):
         logger.info("[%s/%s] validating %s", idx, len(json_files), json_file)
         file_result = process_json_file(
-            json_file, dblp_parser, args.threshold, args.title_similarity_threshold
+            json_file,
+            sources,
+            args.threshold,
+            args.title_similarity_threshold,
+            similarity_method=args.similarity_method,
+            name_part_fuzz_threshold=args.name_part_fuzz_threshold,
+            name_part_damerau_max_distance=args.name_part_damerau_max_distance,
         )
         all_results.append(file_result)
 
@@ -1131,6 +1459,12 @@ def main():
     # Put mismatches on top, matches at bottom
     output_data = {
         'summary': total_stats,
+        'sources': args.sources,
+        'similarity': {
+            'method': args.similarity_method,
+            'name_part_fuzz_threshold': args.name_part_fuzz_threshold,
+            'name_part_damerau_max_distance': args.name_part_damerau_max_distance,
+        },
         'analysis': {
             'error_classifications': dict(error_counts),
             'title_similarity_stats': title_sim_stats,
@@ -1163,7 +1497,7 @@ def main():
     logger.info(f"Total references: {total_stats['total_references']}")
     logger.info(f"Matched (correct citations): {total_stats['total_matched']}")
     logger.info(f"Mismatches (incorrect citations): {total_stats['total_mismatches']}")
-    logger.info(f"No DBLP match / Title mismatch: {total_stats['total_no_match']}")
+    logger.info(f"No database match / Title mismatch: {total_stats['total_no_match']}")
     logger.info(f"Skipped (non-academic): {total_stats['total_skipped']}")
     logger.info(f"Errors: {total_stats['total_errors']}")
     logger.info("="*60)
@@ -1231,6 +1565,8 @@ def categorize_results(results: List[Dict[str, Any]]) -> Dict[str, List[Dict[str
             categories['empty_list'].append(result)
         if status == 'title_mismatch':
             categories['title_mismatches'].append(result)
+        if status in {'no_dblp_match', 'no_database_match'}:
+            categories['no_database_match'].append(result)
         if status == 'no_dblp_match':
             categories['no_dblp_match'].append(result)
         if status == 'error':
@@ -1274,16 +1610,17 @@ This folder contains citation validation results organized by category.
 
 ## File Structure
 
-- `matched.json` - Citations that matched correctly with DBLP
+- `matched.json` - Citations that matched correctly with the selected sources
 - `parsing_errors.json` - Citations with parsing errors in author names
 - `first_names.json` - Citations with first name mismatches
 - `last_names.json` - Citations with last name mismatches
 - `accents_missing.json` - Citations with missing accents/diacritics
-- `author_not_found.json` - Citations where authors were not found in DBLP
+- `author_not_found.json` - Citations where authors were not found in matched source records
 - `author_order_wrong.json` - Citations with correct authors but wrong order
 - `empty_list.json` - Citations with empty author lists
 - `title_mismatches.json` - Citations with title similarity below threshold
-- `no_dblp_match.json` - Citations not found in DBLP database
+- `no_database_match.json` - Citations not found in any configured database
+- `no_dblp_match.json` - Legacy category for DBLP-only unmatched results
 - `errors.json` - Citations that caused processing errors
 - `skipped.json` - Citations that were skipped
 - `summary.json` - Summary statistics for all categories

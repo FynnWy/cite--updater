@@ -21,6 +21,11 @@ def _text(elem: ET.Element | None) -> str:
     return "".join(elem.itertext()).strip()
 
 
+def _normalize_scalar(value: str) -> str:
+    """Normalize plain text fields to a single-space representation."""
+    return " ".join((value or "").split()).strip()
+
+
 def _parse_person_name(author: ET.Element) -> str:
     pers = author.find("tei:persName", NS)
     if pers is None:
@@ -35,6 +40,33 @@ def _parse_person_name(author: ET.Element) -> str:
     if surname:
         parts.append(surname)
     return " ".join(parts).strip()
+
+
+def _extract_reference_venue(monogr: ET.Element | None) -> str:
+    """
+    Extract a venue string from a TEI ``monogr`` block.
+
+    Priority is journal/proceedings/series title, then event, then publisher.
+    """
+    if monogr is None:
+        return ""
+
+    title_paths = (
+        "tei:title[@level='j']",
+        "tei:title[@level='m']",
+        "tei:title[@level='s']",
+    )
+    for path in title_paths:
+        value = _normalize_scalar(_text(monogr.find(path, NS)))
+        if value:
+            return value
+
+    for path in ("tei:meeting", "tei:imprint/tei:publisher"):
+        value = _normalize_scalar(_text(monogr.find(path, NS)))
+        if value:
+            return value
+
+    return ""
 
 
 def _extract_main_biblio(root: ET.Element) -> dict[str, Any]:
@@ -113,6 +145,8 @@ def _extract_reference(bibl: ET.Element, fallback_id: int) -> dict[str, Any]:
         "id": bibl.get(XML_ID, f"b{fallback_id}"),
         "title": title,
         "authors": authors,
+        "venue": _extract_reference_venue(monogr),
+        "year": "",
     }
 
     date_elem = bibl.find(".//tei:imprint/tei:date", NS)

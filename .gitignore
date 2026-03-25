@@ -2,6 +2,7 @@
 .venv310/
 .vscode/
 .cursor/
+.claude/
 .DS_Store
 data/
 dblp/

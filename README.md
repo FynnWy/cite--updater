@@ -2,7 +2,7 @@
 
 Two-stage pipeline aligned with the paper methodology:
 - **Stage 1 - Citation Extraction**: fetch PDFs, run GROBID full-text (PDF -> TEI), convert TEI to TSV/CSV.
-- **Stage 2 - Name Matching**: compare extracted citations against authoritative databases (e.g., DBLP) and optionally classify mismatches with an LLM.
+- **Stage 2 - Name Matching**: compare extracted citations against authoritative databases (DBLP, ACL Anthology, arXiv) and optionally classify mismatches with an LLM.
 
 All commands are exposed via one CLI: `python -m src.pipeline ...`.
 
@@ -126,6 +126,24 @@ curl -sS http://localhost:8070/api/isalive
 python -m src.pipeline grobid --input-dir data/arxiv_pdfs --output-dir data/outputs/arxiv_pdfs
 ```
 
+Optional (same command family): automatic reference-parser dataset/split/eval
+is run after `pipeline grobid` when gold BibTeX files are available.
+Default workspace:
+- `data/grobid_finetune/gold_bibtex/` (input gold `.bib` / `.bibtex`)
+- `data/grobid_finetune/dataset/` (matched pairs + 80/10/10 splits)
+- `data/grobid_finetune/reports/` (macro field-level F1 report)
+- `data/grobid_finetune/runs/` (reproducibility metadata)
+
+If needed, disable this optional workflow:
+```bash
+python -m src.pipeline grobid --no-reference-training-pipeline
+```
+
+If you already have a fine-tuned GROBID config, register it for automatic fallback:
+```bash
+python -m src.pipeline grobid --finetuned-config-path path/to/config.json
+```
+
 #### 4.3 Parse TEI XML to tabular metadata
 ```bash
 python -m src.pipeline parse \
@@ -140,7 +158,7 @@ python -m src.pipeline parse \
 python -m src.pipeline to-json --input-dir data/outputs/arxiv_pdfs --output-dir data/parsed_jsons
 ```
 
-### 5) Stage 2: Validate citations against DBLP
+### 5) Stage 2: Validate citations against databases
 Activate `.venv310` (created in Step 1):
 ```bash
 source .venv310/bin/activate
@@ -148,8 +166,18 @@ source .venv310/bin/activate
 
 Run validation:
 ```bash
-python -m src.pipeline validate --input-dir data/parsed_jsons --dblp-xml data/dblp.xml --output-dir data/results
+python -m src.pipeline validate \
+  --input-dir data/parsed_jsons \
+  --dblp-xml data/dblp.xml \
+  --sources dblp,acl,arxiv \
+  --similarity-method damerau \
+  --output-dir data/results
 ```
+
+Notes:
+- If `dblp` is included in `--sources`, `data/dblp.xml` is required.
+- If `acl` is included in `--sources`, install optional ACL deps: `pip install -r requirements.txt -r requirements-acl.txt`.
+- Similarity is configurable via `--similarity-method` (`fuzz` / `fuzz.ratio` / `damerau`).
 
 ### 6) Optional: LLM mismatch classification
 Use `.venv` (or another environment with `requirements-llm.txt` installed):
@@ -172,7 +200,7 @@ python -m src.pipeline classify --backend transformers --transformers_device aut
 flowchart LR
     A(["📥 download\narXiv / ACL"])
     B(["🔬 grobid\nPDF → TEI + JSON"])
-    D(["✅ validate\nDBLP matching"])
+    D(["✅ validate\ndatabase matching"])
     E(["🤖 classify\nLLM error labels"])
     F(["📋 parse\nTEI → CSV"])
     G(["🔄 to-json\nTEI → JSON"])
@@ -195,12 +223,12 @@ flowchart LR
 |------|---------|--------|--------|
 | 1 | `pipeline download` | `arxiv_fetcher` / `acl_fetcher` | `data/arxiv_pdfs/` |
 | 2 | `pipeline grobid` | `grobid_runner` | `data/outputs/…/*.tei.xml` + `data/parsed_jsons/` |
-| 3 | `pipeline validate` | `validate_citations` + `dblp_parser` | `data/results/validation_results.json` |
+| 3 | `pipeline validate` | `validate_citations` + source adapters (`dblp`/`acl`/`arxiv`) | `data/results/validation_results.json` |
 | 4 ✦ | `pipeline classify` | `vllm_classifier` | `data/results/classified_results.json` |
 | — ✦ | `pipeline parse` | `grobid_parser` | `data/arxiv_metadata.csv` |
 | — ✦ | `pipeline to-json` | `tei_to_json` | `data/parsed_jsons/` |
 
-✦ optional &nbsp;·&nbsp; Steps 1–2 require a running GROBID server &nbsp;·&nbsp; Step 3 requires `data/dblp.xml`
+✦ optional &nbsp;·&nbsp; Steps 1–2 require a running GROBID server &nbsp;·&nbsp; Step 3 requires `data/dblp.xml` when `dblp` source is enabled
 
 ## Repository map (roles)
 ```
@@ -208,11 +236,13 @@ src/pipeline.py                     # CLI entrypoint
 src/citation_extraction/            # Stage 1: PDF -> TEI/TSV
   grobid_runner.py
   grobid_parser.py
+  reference_parser_training.py      # optional dataset/split/eval orchestration
   dblp_scraper.py
 src/name_matching/                  # Stage 2: DB lookups & validation
   api_caller.py
   analyze_matches.py
   validate_citations.py
+  sources/                          # DBLP / ACL / arXiv source adapters
 src/models/                         # Optional LLM classification
   acl_fetcher.py
   arxiv_fetcher.py
@@ -223,6 +253,7 @@ examples/                           # Demos & sample outputs
 docs/refcheck_updated.png           # Pipeline graphic (inline preview)
 docs/refcheck_updated.pdf           # High-res PDF version of the pipeline graphic
 data/results/                       # Outputs written by validate/classify
+data/grobid_finetune/               # Optional reference parser training artifacts
 requirements.txt
 requirements-acl.txt               # Optional deps for ACL downloader
 requirements-llm.txt               # Optional deps for classify (vLLM/transformers)
@@ -232,9 +263,9 @@ requirements-llm.txt               # Optional deps for classify (vLLM/transforme
 - `python -m src.pipeline download --source arxiv` - download PDFs from arXiv using DBLP metadata (fuzzy matching, resumable).
 - `python -m src.pipeline download --source acl` - download ACL Anthology PDFs (default: skip titles already available on arXiv; needs `requirements-acl.txt`).
 - `python -m src.pipeline download --source both` - run both download sources in one command.
-- `python -m src.pipeline grobid` - run GROBID full-text over PDFs (needs running GROBID service).
+- `python -m src.pipeline grobid` - run GROBID full-text over PDFs (needs running GROBID service); optionally auto-builds fine-tune/eval artifacts when gold BibTeX exists.
 - `python -m src.pipeline parse` - convert TEI XML to TSV/CSV.
-- `python -m src.pipeline validate` - match citations against DBLP; produces `validation_results.json`.
+- `python -m src.pipeline validate` - match citations against selected sources (`--sources`): `dblp`, `acl`, `arxiv`; with switchable similarity metric (`--similarity-method`); produces `validation_results.json`.
 - `python -m src.pipeline classify` - optional LLM-based classification of mismatches (auto backend selection: vLLM on Linux, transformers fallback otherwise).
 
 ## Examples

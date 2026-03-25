@@ -95,6 +95,18 @@ def cmd_grobid(args: argparse.Namespace) -> None:
             export_json=not args.no_export_json,
             verbose=not args.no_verbose,
             force=not args.no_force,
+            finetune_workspace=str(args.finetune_workspace),
+            gold_bib_dir=str(args.gold_bib_dir) if args.gold_bib_dir else None,
+            run_reference_training_pipeline=not args.no_reference_training_pipeline,
+            max_finetune_papers=args.max_finetune_papers,
+            random_seed=args.random_seed,
+            finetune_title_match_threshold=args.finetune_title_match_threshold,
+            trainer_command=args.trainer_command,
+            trainer_timeout_sec=args.trainer_timeout_sec,
+            hardware_notes=args.hardware_notes,
+            finetuned_config_path=(
+                str(args.finetuned_config_path) if args.finetuned_config_path else None
+            ),
         )
     except RuntimeError as exc:
         raise SystemExit(f"ERROR: {exc}") from None
@@ -126,12 +138,20 @@ def cmd_validate(args: argparse.Namespace) -> None:
         str(args.input_dir),
         "--dblp-xml",
         str(args.dblp_xml),
+        "--sources",
+        str(args.sources),
         "--output-dir",
         str(args.output_dir),
         "--threshold",
         str(args.threshold),
         "--title-similarity-threshold",
         str(args.title_similarity_threshold),
+        "--similarity-method",
+        str(args.similarity_method),
+        "--name-part-fuzz-threshold",
+        str(args.name_part_fuzz_threshold),
+        "--name-part-damerau-max-distance",
+        str(args.name_part_damerau_max_distance),
     ]
     if args.num_files:
         cli_args += ["--num-files", str(args.num_files)]
@@ -251,12 +271,61 @@ def build_parser() -> argparse.ArgumentParser:
     p_gr.add_argument("--config-path", type=Path, default=BASE_DIR / "config" / "config.json")
     p_gr.add_argument("--parsed-json-dir", type=Path, default=PARSED_JSON_DIR)
     p_gr.add_argument(
+        "--finetune-workspace",
+        type=Path,
+        default=BASE_DIR / "data" / "grobid_finetune",
+        help="Workspace for optional reference parser fine-tuning artifacts",
+    )
+    p_gr.add_argument(
+        "--gold-bib-dir",
+        type=Path,
+        default=None,
+        help="Optional directory with gold BibTeX files; defaults to <finetune-workspace>/gold_bibtex",
+    )
+    p_gr.add_argument(
         "--no-export-json",
         action="store_true",
         help="skip TEI->JSON export for validate input",
     )
     p_gr.add_argument("--no-verbose", action="store_true")
     p_gr.add_argument("--no-force", action="store_true")
+    p_gr.add_argument(
+        "--no-reference-training-pipeline",
+        action="store_true",
+        help="disable optional dataset/split/evaluation workflow after GROBID",
+    )
+    p_gr.add_argument(
+        "--max-finetune-papers",
+        type=int,
+        default=3000,
+        help="maximum TEI papers sampled for optional fine-tune dataset building",
+    )
+    p_gr.add_argument("--random-seed", type=int, default=42)
+    p_gr.add_argument(
+        "--finetune-title-match-threshold",
+        type=float,
+        default=70.0,
+        help="minimum title similarity for TEI/BibTeX alignment in optional workflow",
+    )
+    p_gr.add_argument(
+        "--trainer-command",
+        type=str,
+        default=None,
+        help="optional external trainer command executed in finetune workspace",
+    )
+    p_gr.add_argument("--trainer-timeout-sec", type=int, default=3600)
+    p_gr.add_argument(
+        "--hardware-notes",
+        type=str,
+        default=None,
+        help="optional hardware notes written to run metadata",
+    )
+    p_gr.add_argument(
+        "--finetuned-config-path",
+        type=Path,
+        default=None,
+        help="register this config as active fine-tuned GROBID config for future runs",
+    )
     p_gr.set_defaults(func=cmd_grobid)
 
     # parse
@@ -274,13 +343,40 @@ def build_parser() -> argparse.ArgumentParser:
     p_tj.set_defaults(func=cmd_to_json)
 
     # validate
-    p_va = sub.add_parser("validate", help="Validate citations against DBLP")
+    p_va = sub.add_parser(
+        "validate",
+        help="Validate citations against DBLP, ACL Anthology, and/or arXiv",
+    )
     p_va.add_argument("--input-dir", type=Path, default=PARSED_JSON_DIR)
     p_va.add_argument("--dblp-xml", type=Path, default=DBLP_XML)
+    p_va.add_argument(
+        "--sources",
+        type=str,
+        default="dblp,acl,arxiv",
+        help="Comma-separated sources: dblp,acl,arxiv",
+    )
     p_va.add_argument("--output-dir", type=Path, default=VALIDATION_DIR)
     p_va.add_argument("--num-files", type=int, default=None)
     p_va.add_argument("--threshold", type=float, default=5.0)
     p_va.add_argument("--title-similarity-threshold", type=float, default=95.0)
+    p_va.add_argument(
+        "--similarity-method",
+        type=str,
+        default="fuzz",
+        help="String similarity method for title/name fallback: fuzz or damerau",
+    )
+    p_va.add_argument(
+        "--name-part-fuzz-threshold",
+        type=float,
+        default=85.0,
+        help="Part-level threshold for similarity-method=fuzz",
+    )
+    p_va.add_argument(
+        "--name-part-damerau-max-distance",
+        type=int,
+        default=1,
+        help="Part-level max edit distance for similarity-method=damerau",
+    )
     p_va.set_defaults(func=cmd_validate)
 
     # classify
