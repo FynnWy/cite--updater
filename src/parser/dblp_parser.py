@@ -85,6 +85,9 @@ class DblpParser:
             except Exception as e:
                 logger.warning(f"Failed to load fallback cache: {e}")
 
+        logger.info(
+            "Building fallback DBLP index from XML (first run can take several minutes)..."
+        )
         self._build_fallback_index()
         try:
             with open(fallback_cache, "wb") as f:
@@ -248,6 +251,7 @@ class DblpParser:
 
         self.fallback_publications = []
         self.fallback_titles = []
+        processed = 0
 
         for _, elem in context:
             if elem.tag in publication_types:
@@ -255,6 +259,9 @@ class DblpParser:
                 if pub['title']:
                     self.fallback_publications.append(pub)
                     self.fallback_titles.append(pub['title'])
+                    processed += 1
+                    if processed % 100000 == 0:
+                        logger.info("Fallback index progress: %s publications", processed)
                 elem.clear()
 
         logger.info(f"Built fallback index with {len(self.fallback_titles)} publications")

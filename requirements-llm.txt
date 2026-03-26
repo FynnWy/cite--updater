@@ -1,0 +1,14 @@
+# Optional dependencies for LLM-based mismatch classification.
+# Usage:
+#   pip install -r requirements.txt -r requirements-llm.txt
+#
+# Note:
+#   vLLM is installed only on Linux in this project setup.
+#   On macOS/Windows, this file installs shared LLM deps only.
+
+# Torch 2.2.x wheels on macOS are built against NumPy 1.x ABI.
+numpy<2; platform_system == "Darwin"
+torch>=2.2.0
+huggingface_hub>=0.24.0
+transformers>=4.44.0,<5
+vllm>=0.5.0; platform_system == "Linux"

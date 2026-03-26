@@ -20,9 +20,10 @@ To use Semantic Scholar API with higher rate limits, set your API key:
 The .env file is automatically ignored by git to prevent accidental commits.
 
 Usage:
-    from api_caller import search_papers_by_title
-    
+    from src.name_matching.api_caller import search_papers_by_title, verify_citation, search_semantic_scholar_author
+
     results = search_papers_by_title("Machine Learning in Computer Vision")
+    verification = verify_citation({"title": "Attention Is All You Need", "authors": ["Vaswani"]})
 
 Package Usage:
 - time: Rate limiting delays and timing measurements
@@ -180,6 +181,244 @@ def calculate_title_similarity(title1: str, title2: str) -> int:
     normalized1 = normalize_title(title1)
     normalized2 = normalize_title(title2)
     return fuzz.ratio(normalized1, normalized2)
+
+
+def search_semantic_scholar_author(author_name: str, limit: int = 10) -> Optional[Dict[str, Any]]:
+    """
+    Search Semantic Scholar for authors by name.
+
+    Args:
+        author_name: Author name to search for
+        limit: Maximum number of results to return
+
+    Returns:
+        Dictionary with author info if found, None otherwise.
+    """
+    semantic_scholar_rate_limiter.wait_if_needed()
+
+    try:
+        params = {
+            "query": author_name,
+            "limit": limit,
+            "fields": "name,authorId,paperCount,citationCount,hIndex,affiliations,homepage"
+        }
+
+        headers = {}
+        if SEMANTIC_SCHOLAR_API_KEY:
+            headers['x-api-key'] = SEMANTIC_SCHOLAR_API_KEY
+
+        response = requests.get(
+            "https://api.semanticscholar.org/graph/v1/author/search",
+            params=params,
+            headers=headers,
+            timeout=10
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        authors = data.get('data', [])
+        if authors:
+            best_match = authors[0]
+            return {
+                "name": best_match.get("name"),
+                "author_id": best_match.get("authorId"),
+                "paper_count": best_match.get("paperCount"),
+                "citation_count": best_match.get("citationCount"),
+                "h_index": best_match.get("hIndex"),
+                "affiliations": best_match.get("affiliations", []),
+                "homepage": best_match.get("homepage"),
+                "all_matches": authors,
+                "source": "semantic_scholar"
+            }
+        return None
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Semantic Scholar API error for author '{author_name}': {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error querying Semantic Scholar for author '{author_name}': {e}")
+        return None
+
+
+def compare_authors(original_authors: List[str], verified_authors: List[str]) -> Dict[str, Any]:
+    """
+    Compare original authors with verified authors using fuzzy name matching.
+
+    - Order is ignored.
+    - Minor formatting differences (punctuation, initials) tolerated.
+    - Abbreviations like "M." or "M" for a full first name are acceptable.
+    - Missing or extra middle names are treated as discrepancies.
+
+    Returns:
+        Dict with 'match' (bool) and 'discrepancies' (list).
+    """
+    discrepancies = []
+    matched_original: set = set()
+    matched_verified: set = set()
+
+    try:
+        def normalize(name: str) -> str:
+            if not isinstance(name, str):
+                return ""
+            return name.strip().lower().replace('.', '').replace(',', '')
+
+        def split_name(full_name: str):
+            s = normalize(full_name)
+            parts = s.split()
+            if len(parts) == 0:
+                return [], ""
+            if len(parts) == 1:
+                return [parts[0]], ""
+            return parts[:-1], parts[-1]
+
+        def name_similarity(a: str, b: str) -> float:
+            a = a or ""
+            b = b or ""
+            return fuzz.ratio(a, b) / 100.0
+
+        def is_initial(token: str) -> bool:
+            return isinstance(token, str) and len(token) == 1
+
+        def is_firstname_match(given_a: list, given_b: list) -> bool:
+            if not isinstance(given_a, list) or not isinstance(given_b, list):
+                return False
+            if not given_a or not given_b:
+                return False
+
+            first_a = given_a[0]
+            first_b = given_b[0]
+
+            def first_match_ok(a, b):
+                if not a or not b:
+                    return False
+                if a == b:
+                    return True
+                if is_initial(a) and b.startswith(a):
+                    return True
+                if is_initial(b) and a.startswith(b):
+                    return True
+                return name_similarity(a, b) >= 0.85
+
+            if not first_match_ok(first_a, first_b):
+                return False
+
+            middle_a = given_a[1:]
+            middle_b = given_b[1:]
+
+            if (len(middle_a) > 0 and len(middle_b) == 0) or (len(middle_b) > 0 and len(middle_a) == 0):
+                return False
+
+            if len(middle_a) > 0 and len(middle_b) > 0:
+                if len(middle_a) != len(middle_b):
+                    return False
+                for ma, mb in zip(middle_a, middle_b):
+                    if ma == mb:
+                        continue
+                    if is_initial(ma) and mb.startswith(ma):
+                        continue
+                    if is_initial(mb) and ma.startswith(mb):
+                        continue
+                    if name_similarity(ma, mb) >= 0.85:
+                        continue
+                    return False
+
+            return True
+
+        def is_name_match(original: str, verified: str) -> bool:
+            o_given, o_last = split_name(original)
+            v_given, v_last = split_name(verified)
+
+            if not o_last and not v_last:
+                last_ok = True
+            else:
+                last_ok = name_similarity(o_last, v_last) >= 0.9
+
+            if not last_ok:
+                return False
+
+            return is_firstname_match(o_given, v_given)
+
+        for v_auth in verified_authors or []:
+            try:
+                matches = [o for o in (original_authors or []) if is_name_match(o, v_auth)]
+            except Exception:
+                matches = []
+
+            if matches:
+                matched_verified.add(v_auth)
+                matched_original.add(matches[0])
+            else:
+                best_original = None
+                best_score = 0.0
+                for o_auth in (original_authors or []):
+                    score = name_similarity(normalize(o_auth), normalize(v_auth))
+                    if score > best_score:
+                        best_score = score
+                        best_original = o_auth
+
+                if best_original:
+                    discrepancies.append({
+                        "type": "missing_author",
+                        "details": f"Missing or mismatched author: {v_auth} - {best_original}",
+                        "best_original": best_original,
+                        "similarity": round(best_score, 3)
+                    })
+                else:
+                    discrepancies.append({
+                        "type": "missing_author",
+                        "details": f"Missing or mismatched author: {v_auth}",
+                        "best_original": None,
+                        "similarity": 0.0
+                    })
+
+        return {"match": len(discrepancies) == 0, "discrepancies": discrepancies}
+
+    except Exception as e:
+        return {
+            "match": False,
+            "discrepancies": [{"type": "internal_error", "details": f"compare_authors crashed: {repr(e)}"}]
+        }
+
+
+def verify_citation(citation: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Verify a single citation against Semantic Scholar by title and author matching.
+
+    Args:
+        citation: Dict with at least 'title' and optionally 'authors' (list of str).
+
+    Returns:
+        Dict with 'status', 'source', and comparison details.
+    """
+    title = citation.get('title', '')
+    logger.info(f"Verifying citation: '{title[:60]}...'")
+
+    results = search_semantic_scholar(title, max_results=5)
+
+    if not results:
+        logger.warning(f"No Semantic Scholar match found for: '{title[:60]}...'")
+        return {"status": "not_found", "message": "No matching paper found on Semantic Scholar"}
+
+    best = results[0]
+    comparison = compare_authors(citation.get("authors", []), best.get("authors", []))
+
+    status = "verified" if comparison["match"] else "discrepancy_found"
+    if comparison["match"]:
+        logger.info(f"Citation verified: '{best.get('title', '')[:60]}...'")
+    else:
+        logger.warning(
+            f"Author discrepancies for '{best.get('title', '')[:60]}...': "
+            + "; ".join(d['details'] for d in comparison['discrepancies'])
+        )
+
+    return {
+        "status": status,
+        "source": "semantic_scholar",
+        "matched_title": best.get("title"),
+        "similarity_score": best.get("similarity_score"),
+        "verified_authors": best.get("authors", []),
+        "comparison": comparison
+    }
 
 
 def search_dblp(title: str, max_results: int = 10) -> List[Dict[str, Any]]:
